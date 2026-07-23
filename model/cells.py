@@ -372,3 +372,16 @@ class MCASALayer(nn.Module):
         out = self.out_proj(out)
         h_out = self.norm(h + self.dropout(out))
         return h_out, attn
+
+import torch
+
+def scatter_add(src, index, dim, dim_size):
+    """Pure-PyTorch replacement for torch_scatter.scatter_add.
+    index is 1D and indexes along `dim`; broadcasts over other dims."""
+    out_shape = list(src.shape)
+    out_shape[dim] = dim_size
+    out = torch.zeros(out_shape, dtype=src.dtype, device=src.device)
+    index_shape = [1] * src.dim()
+    index_shape[dim] = index.size(0)
+    idx = index.view(index_shape).expand_as(src)
+    return out.scatter_add_(dim, idx, src)
