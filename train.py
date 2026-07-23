@@ -15,6 +15,9 @@ from model.PM25_GNN import PM25_GNN
 from model.PM25_GNN_nosub import PM25_GNN_nosub
 from model.airformerplusplus import AirFormerPlusPlus
 from model.probgru import ProbGRUModel
+from model.probgru3 import ProbGRUModel3
+from model.probgru4 import ProbGRUModel4
+from model.probgru5 import ProbGRUModel5
 
 import arrow
 import torch
@@ -138,6 +141,66 @@ def get_model():
         dropout=config['experiments'].get('gru_dropout', 0.1),
         logvar_clamp=config['experiments'].get('gru_logvar_clamp', 10.0),
     )
+    elif exp_model == 'ProbGRUModel3':
+        metero_use = config['experiments']['metero_use']
+        wind_channel_idx = (
+            metero_use.index('u_component_of_wind+950'),
+            metero_use.index('v_component_of_wind+950'),
+        )
+        return ProbGRUModel3(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
+            station_coords=coords,
+            station_elevation=altitude,
+            wind_channel_idx=wind_channel_idx,
+            hidden_dim=config['experiments'].get('gru_hidden_dim', 64),
+            latent_dim=config['experiments'].get('gru_latent_dim', 16),
+            attn_dim=config['experiments'].get('gru_attn_dim', 32),
+            num_layers=config['experiments'].get('gru_num_layers', 1),
+            dropout=config['experiments'].get('gru_dropout', 0.1),
+            logvar_clamp=config['experiments'].get('gru_logvar_clamp', 10.0),
+        )
+    elif exp_model == 'ProbGRUModel4':
+        metero_use = config['experiments']['metero_use']
+        wind_channel_idx = (
+            metero_use.index('u_component_of_wind+950'),
+            metero_use.index('v_component_of_wind+950'),
+        )
+        return ProbGRUModel4(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
+            station_coords=coords,
+            station_elevation=altitude,
+            wind_channel_idx=wind_channel_idx,
+            hidden_dim=config['experiments'].get('gru_hidden_dim', 64),
+            latent_dim=config['experiments'].get('gru_latent_dim', 16),
+            attn_dim=config['experiments'].get('gru_attn_dim', 32),
+            num_layers=config['experiments'].get('gru_num_layers', 1),
+            dropout=config['experiments'].get('gru_dropout', 0.1),
+            logvar_clamp=config['experiments'].get('gru_logvar_clamp', 10.0),
+            spatial_mix_mode=config['experiments'].get('gru_spatial_mix_mode', 'bottleneck'),
+        )
+    elif exp_model == 'ProbGRUModel5':
+        metero_use = config['experiments']['metero_use']
+        wind_channel_idx = (
+            metero_use.index('u_component_of_wind+950'),
+            metero_use.index('v_component_of_wind+950'),
+        )
+        return ProbGRUModel5(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
+            station_coords=coords,
+            station_elevation=altitude,
+            wind_channel_idx=wind_channel_idx,
+            hidden_dim=config['experiments'].get('gru_hidden_dim', 64),
+            latent_dim=config['experiments'].get('gru_latent_dim', 16),
+            attn_dim=config['experiments'].get('gru_attn_dim', 32),
+            num_layers=config['experiments'].get('gru_num_layers', 1),
+            dropout=config['experiments'].get('gru_dropout', 0.1),
+            logvar_clamp=config['experiments'].get('gru_logvar_clamp', 10.0),
+            spatial_mix_mode=config['experiments'].get('gru_spatial_mix_mode', 'bottleneck'),
+            decode_spatial_mix=config['experiments'].get('gru_decode_spatial_mix', False),
+        )
     else:
         raise Exception('Wrong model name!')
 
