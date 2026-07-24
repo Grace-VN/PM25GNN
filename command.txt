@@ -63,6 +63,9 @@ python -c "import torch; print('Torch:', torch.__version__)"
 python -c "import torch_geometric; print('PyG:', torch_geometric.__version__)"
 
 # --------------------------------------------
+curl.exe -L -o H:\QA\PM25GNN-main\data\altitude.npy https://raw.githubusercontent.com/shuowang-ai/PM2.5-GNN/master/data/altitude.npy
+# --------------------------------------------
+
 # Run PM25-GNN
 # --------------------------------------------
 python train.py
