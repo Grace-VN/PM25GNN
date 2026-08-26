@@ -134,6 +134,10 @@ results/
 *.pth
 *.npy
 KnowAir.npy
+# ...except data/altitude.npy: small (1.4MB), static, and required just to
+# build the city graph (graph.py) - unlike KnowAir.npy it's not experiment
+# output or ~300MB user-supplied data, so it's fine (and necessary) to ship.
+!data/altitude.npy
 
 # Editor-specific settings (machine-local paths, not meant to be shared)
 .vscode/

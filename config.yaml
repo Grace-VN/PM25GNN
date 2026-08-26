@@ -55,6 +55,13 @@ filepath:
     knowair_fp: D:/Research/Air Quality Forecast 2025/Code/PM2.5-GNN-main/PM2.5-GNN-main - test run/KnowAir.npy
     results_dir: D:/Research/Air Quality Forecast 2025/Code/PM2.5-GNN-main/PM2.5-GNN-main - test run/results
 
+  # Any machine/container/notebook not listed above (Kaggle, Colab, CI, a
+  # fresh clone, ...) falls back to KnowAir.npy / results/ right next to
+  # this repo (see util.py) - no entry needed here for that case. Override
+  # per-run with the KNOWAIR_FP / RESULTS_DIR env vars instead of adding one,
+  # or add a `default:` block here (same two keys as above) if you'd rather
+  # hardcode a path for every unlisted machine.
+
 data:
   metero_var:
     ['100m_u_component_of_wind',

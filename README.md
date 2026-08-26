@@ -93,6 +93,39 @@ filepath:
 python train.py
 ```
 
+## Running on Kaggle
+
+The repo works out of the box on a fresh clone (Kaggle, Colab, or otherwise) - `config.yaml`'s `filepath:` section only lists two specific machines by hostname, and `util.py` automatically falls back to `KnowAir.npy` / `results/` right next to the repo for everything else, so you don't need to edit `config.yaml` just to run it somewhere new.
+
+1. In a Kaggle notebook cell:
+
+   ```bash
+   !git clone https://github.com/Grace-VN/PM25GNN.git
+   %cd PM25GNN
+   !pip install -r requirements.txt -q
+   ```
+
+   Kaggle's GPU notebooks already ship PyTorch, so this mainly installs `torch_geometric`, `torchdiffeq`, `arrow`, `geopy`, `MetPy`, `bresenham` - the packages that aren't preinstalled. `train.py` picks up the GPU automatically (`torch.cuda.is_available()`).
+
+2. Get `KnowAir.npy` onto the notebook - it's ~300MB and intentionally not committed to the repo (see [Dataset](#dataset) above for download links). Either:
+
+   - **Attach it as a Kaggle Dataset** (Add Data -> upload `KnowAir.npy`, or reuse an existing one), then point at it with env vars instead of editing any tracked file:
+
+     ```bash
+     %env KNOWAIR_FP=/kaggle/input/<your-dataset-name>/KnowAir.npy
+     %env RESULTS_DIR=/kaggle/working/results
+     ```
+
+   - **Or** download it straight into the repo folder as `KnowAir.npy` (e.g. `!gdown <google-drive-id>` for the Google Drive link above) - no env vars needed, since that's exactly where the fallback path in `util.py` already looks.
+
+3. Pick a model / `dataset_num` / `pred_len` etc. in `config.yaml` (see [Experiment Setup](#experiment-setup) above), or leave the defaults.
+
+4. Run:
+
+   ```bash
+   !python train.py
+   ```
+
 ## Reference
 
 Paper: https://dl.acm.org/doi/10.1145/3397536.3422208
