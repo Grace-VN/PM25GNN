@@ -1,0 +1,71 @@
+# ============================================
+# PM25-GNN Setup Script (Python 3.11)
+# ============================================
+
+# Go to project
+cd H:\QA\PM25GNN-main
+
+# Allow PowerShell scripts (current session only)
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+
+# Remove old virtual environment (optional)
+if (Test-Path ".venv") {
+    Remove-Item -Recurse -Force .venv
+}
+
+# Create virtual environment
+py -3.11 -m venv .venv
+
+# Activate
+.\.venv\Scripts\Activate.ps1
+
+# Upgrade pip
+python -m pip install --upgrade pip setuptools wheel
+
+# --------------------------------------------
+# Install PyTorch (CPU)
+# --------------------------------------------
+pip install torch torchvision torchaudio
+
+# --------------------------------------------
+# Install PyTorch Geometric
+# --------------------------------------------
+pip install torch_geometric
+
+# --------------------------------------------
+# Install remaining packages
+# --------------------------------------------
+pip install `
+numpy `
+pandas `
+scipy `
+matplotlib `
+scikit-learn `
+scikit-image `
+pyyaml `
+tqdm `
+networkx `
+pillow `
+xarray `
+geopy `
+cdsapi `
+metpy `
+arrow `
+bresenham
+
+# --------------------------------------------
+# Show versions
+# --------------------------------------------
+python --version
+
+python -c "import torch; print('Torch:', torch.__version__)"
+
+python -c "import torch_geometric; print('PyG:', torch_geometric.__version__)"
+
+# --------------------------------------------
+curl.exe -L -o H:\QA\PM25GNN-main\data\altitude.npy https://raw.githubusercontent.com/shuowang-ai/PM2.5-GNN/master/data/altitude.npy
+# --------------------------------------------
+
+# Run PM25-GNN
+# --------------------------------------------
+python train.py
