@@ -13,8 +13,23 @@ from model.GC_LSTM import GC_LSTM
 from model.nodesFC_GRU import nodesFC_GRU
 from model.PM25_GNN import PM25_GNN
 from model.PM25_GNN_nosub import PM25_GNN_nosub
-from model.airformerplusplus import AirFormerPlusPlus
+from model.airformer import AirFormerPM25
+from model.informer import InformerPM25
+from model.autoformer import AutoformerPM25
+from model.patchtst import PatchTSTPM25
+from model.staeformer import STAEformerPM25
+from model.airdde import AirDDEPM25
+from model.airphynet import AirPhyNetPM25
+from model.airdualode import AirDualODEPM25
 from model.probgru import ProbGRUModel
+from model.probgru2 import ProbGRUModel2
+from model.probgru3 import ProbGRUModel3
+from model.probgru4 import ProbGRUModel4
+from model.probgru5 import ProbGRUModel5
+from model.probgru6 import ProbGRUModel6
+from model.probgru7 import ProbGRUModel7
+from model.probgru8 import ProbGRUModel8
+from model.probgru9 import ProbGRUModel9
 
 import arrow
 import torch
@@ -46,11 +61,17 @@ exp_repeat = config['train']['exp_repeat']
 save_npy = config['experiments']['save_npy']
 criterion = nn.MSELoss()
 # Weight for an optional KL-divergence regularization term. Only models
-# that expose a `last_kl_loss` attribute after forward() (currently just
-# AirFormerPlusPlus's hierarchical VAE) use this; every other model is
-# unaffected. Uses .get() with a default so existing config.yaml files
-# don't need a new key to keep working. Override via config['train']['kl_weight'].
+# that expose a `last_kl_loss` attribute after forward() (AirFormer's
+# hierarchical stochastic latent module, AirPhyNet's VAE-style initial
+# state) use this; every other model is unaffected. Uses .get() with a
+# default so existing config.yaml files don't need a new key to keep
+# working. Override via config['train']['kl_weight'].
 kl_weight = config['train'].get('kl_weight', 0.01)
+# Weight for an optional temporal-alignment regularization term (currently
+# just AirDualODE's physics/data-branch agreement loss, exposed via
+# `last_alignment_loss`) - same opt-in mechanism as kl_weight above, just
+# for a differently-meaning auxiliary loss so the two aren't conflated.
+alignment_weight = config['train'].get('alignment_weight', 0.1)
 
 train_data = HazeData(graph, hist_len, pred_len, dataset_num, flag='Train')
 val_data = HazeData(graph, hist_len, pred_len, dataset_num, flag='Val')
@@ -126,8 +147,138 @@ def get_model():
         return PM25_GNN(hist_len, pred_len, in_dim, city_num, batch_size, device, graph.edge_index, graph.edge_attr, wind_mean, wind_std)
     elif exp_model == 'PM25_GNN_nosub':
         return PM25_GNN_nosub(hist_len, pred_len, in_dim, city_num, batch_size, device, graph.edge_index, graph.edge_attr, wind_mean, wind_std)
-    elif exp_model == 'AirFormerPlusPlus':
-        return AirFormerPlusPlus(hist_len, pred_len, in_dim, city_num, batch_size, device, graph.edge_index, graph.edge_attr, wind_mean, wind_std)
+    elif exp_model == 'AirFormer':
+        return AirFormerPM25(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
+            station_coords=coords,
+            hidden_channels=config['experiments'].get('airformer_hidden_channels', 32),
+            end_channels=config['experiments'].get('airformer_end_channels', 512),
+            blocks=config['experiments'].get('airformer_blocks', 4),
+            num_heads=config['experiments'].get('airformer_num_heads', 2),
+            mlp_expansion=config['experiments'].get('airformer_mlp_expansion', 2),
+            depth=config['experiments'].get('airformer_depth', 1),
+            dropout=config['experiments'].get('airformer_dropout', 0.3),
+            spatial_flag=config['experiments'].get('airformer_spatial_flag', True),
+            stochastic_flag=config['experiments'].get('airformer_stochastic_flag', True),
+        )
+    elif exp_model == 'Informer':
+        return InformerPM25(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            label_len=config['experiments'].get('informer_label_len', None),
+            d_model=config['experiments'].get('informer_d_model', 64),
+            n_heads=config['experiments'].get('informer_n_heads', 8),
+            e_layers=config['experiments'].get('informer_e_layers', 2),
+            d_layers=config['experiments'].get('informer_d_layers', 1),
+            d_ff=config['experiments'].get('informer_d_ff', 256),
+            factor=config['experiments'].get('informer_factor', 5),
+            dropout=config['experiments'].get('informer_dropout', 0.1),
+            attn=config['experiments'].get('informer_attn', 'prob'),
+            activation=config['experiments'].get('informer_activation', 'gelu'),
+            distil=config['experiments'].get('informer_distil', True),
+            mix=config['experiments'].get('informer_mix', True),
+        )
+    elif exp_model == 'Autoformer':
+        return AutoformerPM25(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            label_len=config['experiments'].get('autoformer_label_len', None),
+            d_model=config['experiments'].get('autoformer_d_model', 64),
+            n_heads=config['experiments'].get('autoformer_n_heads', 8),
+            e_layers=config['experiments'].get('autoformer_e_layers', 2),
+            d_layers=config['experiments'].get('autoformer_d_layers', 1),
+            d_ff=config['experiments'].get('autoformer_d_ff', 256),
+            moving_avg=config['experiments'].get('autoformer_moving_avg', 25),
+            factor=config['experiments'].get('autoformer_factor', 1),
+            dropout=config['experiments'].get('autoformer_dropout', 0.1),
+            activation=config['experiments'].get('autoformer_activation', 'gelu'),
+        )
+    elif exp_model == 'PatchTST':
+        return PatchTSTPM25(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            patch_len=config['experiments'].get('patchtst_patch_len', 8),
+            stride=config['experiments'].get('patchtst_stride', 4),
+            d_model=config['experiments'].get('patchtst_d_model', 32),
+            n_heads=config['experiments'].get('patchtst_n_heads', 4),
+            e_layers=config['experiments'].get('patchtst_e_layers', 2),
+            d_ff=config['experiments'].get('patchtst_d_ff', 128),
+            dropout=config['experiments'].get('patchtst_dropout', 0.1),
+            head_dropout=config['experiments'].get('patchtst_head_dropout', 0.1),
+            activation=config['experiments'].get('patchtst_activation', 'gelu'),
+            revin=config['experiments'].get('patchtst_revin', True),
+        )
+    elif exp_model == 'STAEformer':
+        return STAEformerPM25(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            feature_mean=train_data.feature_mean,
+            feature_std=train_data.feature_std,
+            input_embedding_dim=config['experiments'].get('staeformer_input_dim', 24),
+            tod_embedding_dim=config['experiments'].get('staeformer_tod_dim', 24),
+            dow_embedding_dim=config['experiments'].get('staeformer_dow_dim', 24),
+            adaptive_embedding_dim=config['experiments'].get('staeformer_adaptive_dim', 80),
+            n_heads=config['experiments'].get('staeformer_n_heads', 4),
+            e_layers=config['experiments'].get('staeformer_e_layers', 3),
+            d_ff=config['experiments'].get('staeformer_d_ff', 256),
+            dropout=config['experiments'].get('staeformer_dropout', 0.1),
+            activation=config['experiments'].get('staeformer_activation', 'gelu'),
+            dt_hours=config['experiments'].get('staeformer_dt_hours', 3.0),
+        )
+    elif exp_model == 'AirDDE':
+        return AirDDEPM25(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
+            rnn_units=config['experiments'].get('airdde_rnn_units', 64),
+            rnn_num_layers=config['experiments'].get('airdde_rnn_num_layers', 1),
+            agcn_cheb_k=config['experiments'].get('airdde_agcn_cheb_k', 3),
+            mem_num=config['experiments'].get('airdde_mem_num', 20),
+            mem_dim=config['experiments'].get('airdde_mem_dim', 64),
+            local_mem_tau=config['experiments'].get('airdde_local_mem_tau', 3),
+            local_mem_k=config['experiments'].get('airdde_local_mem_k', 8),
+            ode_gcn_hidden_dim=config['experiments'].get('airdde_ode_gcn_hidden_dim', 64),
+            ode_cheb_k=config['experiments'].get('airdde_ode_cheb_k', 3),
+            ode_num_layers=config['experiments'].get('airdde_ode_num_layers', 3),
+            ode_method=config['experiments'].get('airdde_ode_method', 'dopri5'),
+            ode_rtol=config['experiments'].get('airdde_ode_rtol', 1e-2),
+            ode_atol=config['experiments'].get('airdde_ode_atol', 1e-2),
+            ode_adjoint=config['experiments'].get('airdde_ode_adjoint', True),
+        )
+    elif exp_model == 'AirPhyNet':
+        # Neural-ODE model - noticeably slower per batch than the other
+        # benchmarks here (adjoint backward re-solves the ODE): ~6s forward
+        # / ~70s backward for a batch of 2 at this repo's real scale
+        # (184 nodes, hist_len=24, pred_len=8, CPU). Budget accordingly for
+        # exp_repeat x epochs. Set airphynet_ode_adjoint: False to try the
+        # non-adjoint solver instead (more memory, potentially faster
+        # backward for a state this small - not yet benchmarked here).
+        return AirPhyNetPM25(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
+            rnn_units=config['experiments'].get('airphynet_rnn_units', 64),
+            latent_dim=config['experiments'].get('airphynet_latent_dim', 4),
+            gcn_step=config['experiments'].get('airphynet_gcn_step', 2),
+            diff_coeff=config['experiments'].get('airphynet_diff_coeff', 0.1),
+            n_traj_samples=config['experiments'].get('airphynet_n_traj_samples', 1),
+            ode_method=config['experiments'].get('airphynet_ode_method', 'dopri5'),
+            ode_rtol=config['experiments'].get('airphynet_ode_rtol', 1e-3),
+            ode_atol=config['experiments'].get('airphynet_ode_atol', 1e-4),
+            ode_adjoint=config['experiments'].get('airphynet_ode_adjoint', True),
+            filter_type=config['experiments'].get('airphynet_filter_type', 'diff_adv'),
+        )
+    elif exp_model == 'AirDualODE':
+        return AirDualODEPM25(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
+            phy_latent_dim=config['experiments'].get('airdualode_phy_latent_dim', 8),
+            unk_latent_dim=config['experiments'].get('airdualode_unk_latent_dim', 8),
+            fusion_dim=config['experiments'].get('airdualode_fusion_dim', 16),
+            gcn_step=config['experiments'].get('airdualode_gcn_step', 2),
+            rnn_units=config['experiments'].get('airdualode_rnn_units', 32),
+            attn_heads=config['experiments'].get('airdualode_attn_heads', 2),
+            estimate_coeff=config['experiments'].get('airdualode_estimate_coeff', False),
+            ode_method=config['experiments'].get('airdualode_ode_method', 'dopri5'),
+            ode_rtol=config['experiments'].get('airdualode_ode_rtol', 1e-3),
+            ode_atol=config['experiments'].get('airdualode_ode_atol', 1e-4),
+            ode_adjoint=config['experiments'].get('airdualode_ode_adjoint', True),
+        )
     elif exp_model == 'ProbGRUModel':
         return ProbGRUModel(
         hist_len, pred_len, in_dim, city_num, batch_size, device,
@@ -138,6 +289,202 @@ def get_model():
         dropout=config['experiments'].get('gru_dropout', 0.1),
         logvar_clamp=config['experiments'].get('gru_logvar_clamp', 10.0),
     )
+    elif exp_model == 'ProbGRUModel2':
+        metero_use = config['experiments']['metero_use']
+        wind_channel_idx = (
+            metero_use.index('u_component_of_wind+950'),
+            metero_use.index('v_component_of_wind+950'),
+        )
+        return ProbGRUModel2(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
+            station_coords=coords,
+            station_elevation=altitude,
+            wind_channel_idx=wind_channel_idx,
+            hidden_dim=config['experiments'].get('gru_hidden_dim', 64),
+            latent_dim=config['experiments'].get('gru_latent_dim', 16),
+            attn_dim=config['experiments'].get('gru_attn_dim', 32),
+            num_layers=config['experiments'].get('gru_num_layers', 1),
+            dropout=config['experiments'].get('gru_dropout', 0.1),
+            logvar_clamp=config['experiments'].get('gru_logvar_clamp', 10.0),
+            spatial_mix_mode=config['experiments'].get('gru_spatial_mix_mode', 'bottleneck'),
+            dt_hours=config['experiments'].get('gru_dt_hours', 3.0),
+        )
+    elif exp_model == 'ProbGRUModel3':
+        metero_use = config['experiments']['metero_use']
+        wind_channel_idx = (
+            metero_use.index('u_component_of_wind+950'),
+            metero_use.index('v_component_of_wind+950'),
+        )
+        return ProbGRUModel3(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
+            station_coords=coords,
+            station_elevation=altitude,
+            wind_channel_idx=wind_channel_idx,
+            hidden_dim=config['experiments'].get('gru_hidden_dim', 64),
+            latent_dim=config['experiments'].get('gru_latent_dim', 16),
+            attn_dim=config['experiments'].get('gru_attn_dim', 32),
+            num_layers=config['experiments'].get('gru_num_layers', 1),
+            dropout=config['experiments'].get('gru_dropout', 0.1),
+            logvar_clamp=config['experiments'].get('gru_logvar_clamp', 10.0),
+            spatial_mix_mode=config['experiments'].get('gru_spatial_mix_mode', 'bottleneck'),
+            decode_spatial_mix=config['experiments'].get('gru_decode_spatial_mix', False),
+            dt_hours=config['experiments'].get('gru_dt_hours', 3.0),
+        )
+    elif exp_model == 'ProbGRUModel4':
+        metero_use = config['experiments']['metero_use']
+        wind_channel_idx = (
+            metero_use.index('u_component_of_wind+950'),
+            metero_use.index('v_component_of_wind+950'),
+        )
+        return ProbGRUModel4(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
+            station_coords=coords,
+            station_elevation=altitude,
+            wind_channel_idx=wind_channel_idx,
+            hidden_dim=config['experiments'].get('gru_hidden_dim', 64),
+            latent_dim=config['experiments'].get('gru_latent_dim', 16),
+            attn_dim=config['experiments'].get('gru_attn_dim', 32),
+            num_layers=config['experiments'].get('gru_num_layers', 1),
+            dropout=config['experiments'].get('gru_dropout', 0.1),
+            logvar_clamp=config['experiments'].get('gru_logvar_clamp', 10.0),
+            spatial_mix_mode=config['experiments'].get('gru_spatial_mix_mode', 'bottleneck'),
+        )
+    elif exp_model == 'ProbGRUModel5':
+        metero_use = config['experiments']['metero_use']
+        pbl_channel_idx = (
+            metero_use.index('boundary_layer_height')
+            if 'boundary_layer_height' in metero_use else None
+        )
+        return ProbGRUModel5(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
+            station_coords=coords,
+            station_elevation=altitude,
+            feature_mean=train_data.feature_mean,
+            feature_std=train_data.feature_std,
+            pbl_channel_idx=pbl_channel_idx,
+            hidden_dim=config['experiments'].get('gru_hidden_dim', 64),
+            latent_dim=config['experiments'].get('gru_latent_dim', 16),
+            attn_dim=config['experiments'].get('gru_attn_dim', 32),
+            adaptive_dim=config['experiments'].get('gru_adaptive_dim', 16),
+            gate_hidden_dim=config['experiments'].get('gru_gate_hidden_dim', 16),
+            num_layers=config['experiments'].get('gru_num_layers', 1),
+            dropout=config['experiments'].get('gru_dropout', 0.1),
+            logvar_clamp=config['experiments'].get('gru_logvar_clamp', 10.0),
+            spatial_mix_mode=config['experiments'].get('gru_spatial_mix_mode', 'bottleneck'),
+            decode_spatial_mix=config['experiments'].get('gru_decode_spatial_mix', False),
+            dist_threshold_km=config['experiments'].get('gru_dist_threshold_km', 300.0),
+            sigma_h=config['experiments'].get('gru_sigma_h', 1200.0),
+            diffusivity_init_km2h=config['experiments'].get('gru_diffusivity_init_km2h', 50.0),
+            sigma_min_km=config['experiments'].get('gru_sigma_min_km', 15.0),
+            calm_speed_kmh_init=config['experiments'].get('gru_calm_speed_kmh_init', 5.0),
+            calm_scale_kmh_init=config['experiments'].get('gru_calm_scale_kmh_init', 3.0),
+            gate_clamp=config['experiments'].get('gru_gate_clamp', 2.0),
+            dt_hours=config['experiments'].get('gru_dt_hours', 3.0),
+        )
+    elif exp_model == 'ProbGRUModel6':
+        metero_use = config['experiments']['metero_use']
+        pbl_channel_idx = (
+            metero_use.index('boundary_layer_height')
+            if 'boundary_layer_height' in metero_use else None
+        )
+        return ProbGRUModel6(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
+            station_coords=coords,
+            station_elevation=altitude,
+            feature_mean=train_data.feature_mean,
+            feature_std=train_data.feature_std,
+            pbl_channel_idx=pbl_channel_idx,
+            hidden_dim=config['experiments'].get('gru_hidden_dim', 32),
+            latent_dim=config['experiments'].get('gru_latent_dim', 8),
+            attn_dim=config['experiments'].get('gru_attn_dim', 16),
+            num_layers=config['experiments'].get('gru_num_layers', 1),
+            dropout=config['experiments'].get('gru_dropout', 0.1),
+            logvar_clamp=config['experiments'].get('gru_logvar_clamp', 10.0),
+            spatial_mix_mode=config['experiments'].get('gru_spatial_mix_mode', 'bottleneck'),
+            dist_threshold_km=config['experiments'].get('gru_dist_threshold_km', 300.0),
+            sigma_h=config['experiments'].get('gru_sigma_h', 1200.0),
+            diffusivity_init_km2h=config['experiments'].get('gru_diffusivity_init_km2h', 50.0),
+            sigma_min_km=config['experiments'].get('gru_sigma_min_km', 15.0),
+            calm_speed_kmh_init=config['experiments'].get('gru_calm_speed_kmh_init', 5.0),
+            calm_scale_kmh_init=config['experiments'].get('gru_calm_scale_kmh_init', 3.0),
+            gate_clamp=config['experiments'].get('gru_gate_clamp', 2.0),
+            dt_hours=config['experiments'].get('gru_dt_hours', 3.0),
+        )
+    elif exp_model == 'ProbGRUModel7':
+        metero_use = config['experiments']['metero_use']
+        pbl_channel_idx = (
+            metero_use.index('boundary_layer_height')
+            if 'boundary_layer_height' in metero_use else None
+        )
+        return ProbGRUModel7(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
+            station_coords=coords,
+            station_elevation=altitude,
+            feature_mean=train_data.feature_mean,
+            feature_std=train_data.feature_std,
+            pbl_channel_idx=pbl_channel_idx,
+            hidden_dim=config['experiments'].get('gru_hidden_dim', 32),
+            adaptive_dim=config['experiments'].get('gru_adaptive_dim', 8),
+            max_lag=config['experiments'].get('gru_max_lag', 8),
+            num_layers=config['experiments'].get('gru_num_layers', 1),
+            dropout=config['experiments'].get('gru_dropout', 0.1),
+            dist_threshold_km=config['experiments'].get('gru_dist_threshold_km', 300.0),
+            sigma_h=config['experiments'].get('gru_sigma_h', 1200.0),
+            diffusivity_init_km2h=config['experiments'].get('gru_diffusivity_init_km2h', 50.0),
+            sigma_min_km=config['experiments'].get('gru_sigma_min_km', 15.0),
+            sigma_tau_init_h=config['experiments'].get('gru_sigma_tau_init_h', 3.0),
+            dt_hours=config['experiments'].get('gru_dt_hours', 3.0),
+        )
+    elif exp_model == 'ProbGRUModel8':
+        return ProbGRUModel8(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
+            station_coords=coords,
+            station_elevation=altitude,
+            feature_mean=train_data.feature_mean,
+            feature_std=train_data.feature_std,
+            hidden_dim=config['experiments'].get('gru_hidden_dim', 64),
+            latent_dim=config['experiments'].get('gru_latent_dim', 16),
+            attn_dim=config['experiments'].get('gru_attn_dim', 32),
+            num_layers=config['experiments'].get('gru_num_layers', 1),
+            dropout=config['experiments'].get('gru_dropout', 0.1),
+            logvar_clamp=config['experiments'].get('gru_logvar_clamp', 10.0),
+            spatial_mix_mode=config['experiments'].get('gru_spatial_mix_mode', 'bottleneck'),
+            max_lag=config['experiments'].get('gru_max_lag', 6),
+            dist_threshold_km=config['experiments'].get('gru_dist_threshold_km', 300.0),
+            sigma_d=config['experiments'].get('gru_sigma_d', 200.0),
+            sigma_h=config['experiments'].get('gru_sigma_h', 1200.0),
+            sigma_tau_init_h=config['experiments'].get('gru_sigma_tau_init_h', 3.0),
+            dt_hours=config['experiments'].get('gru_dt_hours', 3.0),
+        )
+    elif exp_model == 'ProbGRUModel9':
+        return ProbGRUModel9(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
+            station_coords=coords,
+            station_elevation=altitude,
+            feature_mean=train_data.feature_mean,
+            feature_std=train_data.feature_std,
+            hidden_dim=config['experiments'].get('gru_hidden_dim', 64),
+            latent_dim=config['experiments'].get('gru_latent_dim', 16),
+            attn_dim=config['experiments'].get('gru_attn_dim', 32),
+            num_layers=config['experiments'].get('gru_num_layers', 1),
+            dropout=config['experiments'].get('gru_dropout', 0.1),
+            logvar_clamp=config['experiments'].get('gru_logvar_clamp', 10.0),
+            spatial_mix_mode=config['experiments'].get('gru_spatial_mix_mode', 'bottleneck'),
+            max_lag=config['experiments'].get('gru_max_lag', 6),
+            dist_threshold_km=config['experiments'].get('gru_dist_threshold_km', 300.0),
+            sigma_h=config['experiments'].get('gru_sigma_h', 1200.0),
+            diffusivity_init_km2h=config['experiments'].get('gru_diffusivity_init_km2h', 50.0),
+            sigma_min_km=config['experiments'].get('gru_sigma_min_km', 15.0),
+            dt_hours=config['experiments'].get('gru_dt_hours', 3.0),
+        )
     else:
         raise Exception('Wrong model name!')
 
@@ -154,13 +501,17 @@ def train(train_loader, model, optimizer):
         pm25_hist = pm25[:, :hist_len]
         pm25_pred = model(pm25_hist, feature)
         loss = criterion(pm25_pred, pm25_label)
-        # Optional KL regularization (VAE-style models only). val()/test()
-        # deliberately do NOT include this term - validation loss is used
-        # for early stopping / best-model selection and should reflect pure
-        # predictive accuracy, not the training regularizer.
+        # Optional auxiliary regularization terms (VAE-style KL / dual-branch
+        # alignment). val()/test() deliberately do NOT include these - the
+        # validation loss is used for early stopping / best-model selection
+        # and should reflect pure predictive accuracy, not training-time
+        # regularizers.
         kl = getattr(model, 'last_kl_loss', None)
         if kl is not None:
             loss = loss + kl_weight * kl
+        alignment = getattr(model, 'last_alignment_loss', None)
+        if alignment is not None:
+            loss = loss + alignment_weight * alignment
         loss.backward()
         optimizer.step()
         train_loss += loss.item()

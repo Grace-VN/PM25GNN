@@ -9,24 +9,39 @@ experiments:
                'u_component_of_wind+950',
                'v_component_of_wind+950',]
   save_npy: True
-  dataset_num: 1
-  model: ProbGRUModel
-# model: MLP  
+  dataset_num: 3
+  model: Informer
+# model: MLP
 #  model: LSTM
 #  model: GRU
 #  model: GC_LSTM
 #  model: nodesFC_GRU
 #  model: PM25_GNN
 #  model: PM25_GNN_nosub
-#  model: AirFormerPlusPlus
+#  model: AirFormer
+#  model: Informer
+#  model: Autoformer
+#  model: PatchTST
+#  model: STAEformer
+#  model: AirDDE
+#  model: AirPhyNet
+#  model: AirDualODE
 #  model: ProbGRUModel
+#  model: ProbGRUModel2
+#  model: ProbGRUModel3
+#  model: ProbGRUModel4
+#  model: ProbGRUModel5
+#  model: ProbGRUModel6
+#  model: ProbGRUModel7
+#  model: ProbGRUModel8
+#  model: ProbGRUModel9
 
 train:
   batch_size: 32
   epochs: 50
   exp_repeat: 5
   hist_len: 24
-  pred_len: 24
+  pred_len: 8
   weight_decay: 0.0005
   early_stop: 10
   lr: 0.0005

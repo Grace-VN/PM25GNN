@@ -134,3 +134,6 @@ results/
 *.pth
 *.npy
 KnowAir.npy
+
+# Editor-specific settings (machine-local paths, not meant to be shared)
+.vscode/
