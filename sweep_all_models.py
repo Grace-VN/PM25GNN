@@ -6,7 +6,7 @@ doesn't need to re-launch train.py (and re-edit config.yaml) once per model.
 For each model, trains --exp_repeat times (default from config.yaml's
 train.exp_repeat), averages the metrics, and writes:
 
-    <output_dir>/<MODEL>_ds<N>_hl<H>_pl<P>.txt   - one detailed report per model
+    <output_dir>/<MODEL>_<hist_len>_<pred_len>_<dataset_num>.txt - one detailed report per model
     <output_dir>/summary.csv                      - one row per model, side by side
 
 Usage:
@@ -632,7 +632,9 @@ def run_single_repeat(model_name, model, optimizer, train_loader, val_loader, te
 
 
 def run_for_model(model_name, args, ctx):
-    tag = f'{model_name}_ds{args.dataset_num}_hl{args.hist_len}_pl{args.pred_len}'
+    # {model}_{hist_len}_{pred_len}_{dataset_num} - same convention as
+    # train.py's metric report filename, for consistency across both scripts.
+    tag = f'{model_name}_{args.hist_len}_{args.pred_len}_{args.dataset_num}'
     print(f'\n=== {tag} ===')
     combo_dir = os.path.join(args.output_dir, 'artifacts', tag)
     per_repeat = {k: [] for k in METRIC_KEYS}
