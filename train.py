@@ -39,6 +39,17 @@ import numpy as np
 import pickle
 import glob
 import shutil
+import time
+
+try:
+    import psutil
+    _psutil_process = psutil.Process()
+except ImportError:
+    # Efficiency reporting degrades gracefully without it: peak_memory_mb
+    # reports NaN on CPU runs instead of a real number (GPU runs are
+    # unaffected - torch.cuda's own memory stats don't need psutil).
+    psutil = None
+    _psutil_process = None
 
 torch.set_num_threads(1)
 use_cuda = torch.cuda.is_available()
@@ -99,7 +110,20 @@ def get_metric(predict_epoch, label_epoch):
     label = label.reshape((-1, label.shape[-1]))
     mae = np.mean(np.mean(np.abs(predict - label), axis=1))
     rmse = np.mean(np.sqrt(np.mean(np.square(predict - label), axis=1)))
-    return rmse, mae, csi, pod, far
+    mape = get_mape(predict, label)
+    return rmse, mae, mape, csi, pod, far
+
+
+def get_mape(predict, label, eps_threshold=1.0):
+    """Mean Absolute Percentage Error, masking out |label| < eps_threshold
+    (ug/m3). PM2.5 readings near zero make the percentage denominator
+    blow up / become meaningless - that's measurement-noise-floor
+    territory, not a real relative-error signal, so those points are
+    excluded rather than fudged with a denominator epsilon."""
+    mask = np.abs(label) >= eps_threshold
+    if not np.any(mask):
+        return float('nan')
+    return float(np.mean(np.abs((predict[mask] - label[mask]) / label[mask])) * 100)
 
 
 def get_exp_info():
@@ -573,13 +597,61 @@ def get_mean_std(data_list):
     return data.mean(), data.std()
 
 
+def reset_peak_memory():
+    """Call once before a repeat's training starts. On GPU, torch tracks
+    the true peak itself from here on (see peak_memory_mb). On CPU there's
+    no equivalent - the best we can do without a background sampling
+    thread is return the current RSS baseline, and let the caller take a
+    running max via peak_memory_mb(..., running_max) at a few points
+    during training (this file samples after every epoch, see main())."""
+    if use_cuda:
+        torch.cuda.reset_peak_memory_stats(device)
+        return 0.0
+    elif _psutil_process is not None:
+        return _psutil_process.memory_info().rss / 1e6
+    return float('nan')
+
+
+def peak_memory_mb(running_max=0.0):
+    """GPU: exact peak since the last reset_peak_memory() call. CPU: max of
+    running_max and the current RSS sample (see reset_peak_memory's note -
+    this is a point-in-time approximation of peak, not a true one)."""
+    if use_cuda:
+        return torch.cuda.max_memory_allocated(device) / 1e6
+    elif _psutil_process is not None:
+        return max(running_max, _psutil_process.memory_info().rss / 1e6)
+    return float('nan')
+
+
+def measure_inference_latency(test_loader, model):
+    """Dedicated no_grad timing pass, separate from test()'s accuracy-focused
+    evaluation (which also builds up predict/label arrays and doesn't use
+    no_grad) - this is purely for the ms/sample efficiency number."""
+    model.eval()
+    n_samples = 0
+    t0 = time.time()
+    with torch.no_grad():
+        for data in test_loader:
+            pm25, feature, time_arr = data
+            pm25 = pm25.to(device)
+            feature = feature.to(device)
+            pm25_hist = pm25[:, :hist_len]
+            model(pm25_hist, feature)
+            n_samples += pm25.shape[0]
+    elapsed = time.time() - t0
+    return (elapsed / n_samples * 1000) if n_samples else float('nan')
+
+
 def main():
     exp_info = get_exp_info()
     print(exp_info)
 
     exp_time = arrow.now().format('YYYYMMDDHHmmss')
 
-    train_loss_list, val_loss_list, test_loss_list, rmse_list, mae_list, csi_list, pod_list, far_list = [], [], [], [], [], [], [], []
+    train_loss_list, val_loss_list, test_loss_list, rmse_list, mae_list, mape_list, csi_list, pod_list, far_list = [], [], [], [], [], [], [], [], []
+    # Efficiency metrics, commonly reported alongside accuracy in papers:
+    # model size, wall-clock training cost, inference latency, peak memory.
+    param_count_list, epoch_time_list, inference_time_list, peak_memory_list = [], [], [], []
 
     for exp_idx in range(exp_repeat):
         print('\nNo.%2d experiment ~~~' % exp_idx)
@@ -591,8 +663,10 @@ def main():
         model = get_model()
         model = model.to(device)
         model_name = type(model).__name__
+        param_count = sum(p.numel() for p in model.parameters())
 
         print(str(model))
+        print('param_count: %d' % param_count)
 
         optimizer = torch.optim.RMSprop(model.parameters(), lr=lr, weight_decay=weight_decay)
 
@@ -605,12 +679,17 @@ def main():
         best_epoch = 0
 
         train_loss_, val_loss_ = 0, 0
+        epoch_times = []
+        running_peak_mb = reset_peak_memory()
 
         for epoch in range(epochs):
             print('\nTrain epoch %s:' % (epoch))
 
+            t0 = time.time()
             train_loss = train(train_loader, model, optimizer)
+            epoch_times.append(time.time() - t0)
             val_loss = val(val_loader, model)
+            running_peak_mb = peak_memory_mb(running_peak_mb)
 
             print('train_loss: %.4f' % train_loss)
             print('val_loss: %.4f' % val_loss)
@@ -627,27 +706,38 @@ def main():
 
                 test_loss, predict_epoch, label_epoch, time_epoch = test(test_loader, model)
                 train_loss_, val_loss_ = train_loss, val_loss
-                rmse, mae, csi, pod, far = get_metric(predict_epoch, label_epoch)
-                print('Train loss: %0.4f, Val loss: %0.4f, Test loss: %0.4f, RMSE: %0.2f, MAE: %0.2f, CSI: %0.4f, POD: %0.4f, FAR: %0.4f' % (train_loss_, val_loss_, test_loss, rmse, mae, csi, pod, far))
+                rmse, mae, mape, csi, pod, far = get_metric(predict_epoch, label_epoch)
+                print('Train loss: %0.4f, Val loss: %0.4f, Test loss: %0.4f, RMSE: %0.2f, MAE: %0.2f, MAPE: %0.2f%%, CSI: %0.4f, POD: %0.4f, FAR: %0.4f' % (train_loss_, val_loss_, test_loss, rmse, mae, mape, csi, pod, far))
 
                 if save_npy:
                     np.save(os.path.join(exp_model_dir, 'predict.npy'), predict_epoch)
                     np.save(os.path.join(exp_model_dir, 'label.npy'), label_epoch)
                     np.save(os.path.join(exp_model_dir, 'time.npy'), time_epoch)
 
+        inference_time_ms = measure_inference_latency(test_loader, model)
+        running_peak_mb = peak_memory_mb(running_peak_mb)
+
         train_loss_list.append(train_loss_)
         val_loss_list.append(val_loss_)
         test_loss_list.append(test_loss)
         rmse_list.append(rmse)
         mae_list.append(mae)
+        mape_list.append(mape)
         csi_list.append(csi)
         pod_list.append(pod)
         far_list.append(far)
+        param_count_list.append(param_count)
+        epoch_time_list.append(np.mean(epoch_times) if epoch_times else float('nan'))
+        inference_time_list.append(inference_time_ms)
+        peak_memory_list.append(running_peak_mb)
 
         print('\nNo.%2d experiment results:' % exp_idx)
         print(
-            'Train loss: %0.4f, Val loss: %0.4f, Test loss: %0.4f, RMSE: %0.2f, MAE: %0.2f, CSI: %0.4f, POD: %0.4f, FAR: %0.4f' % (
-            train_loss_, val_loss_, test_loss, rmse, mae, csi, pod, far))
+            'Train loss: %0.4f, Val loss: %0.4f, Test loss: %0.4f, RMSE: %0.2f, MAE: %0.2f, MAPE: %0.2f%%, CSI: %0.4f, POD: %0.4f, FAR: %0.4f' % (
+            train_loss_, val_loss_, test_loss, rmse, mae, mape, csi, pod, far))
+        print(
+            'param_count: %d, avg epoch train time: %0.2fs, inference: %0.3fms/sample, peak memory: %0.1fMB' % (
+            param_count, epoch_time_list[-1], inference_time_ms, running_peak_mb))
 
     exp_metric_str = '---------------------------------------\n' + \
                      'train_loss | mean: %0.4f std: %0.4f\n' % (get_mean_std(train_loss_list)) + \
@@ -655,9 +745,16 @@ def main():
                      'test_loss  | mean: %0.4f std: %0.4f\n' % (get_mean_std(test_loss_list)) + \
                      'RMSE       | mean: %0.4f std: %0.4f\n' % (get_mean_std(rmse_list)) + \
                      'MAE        | mean: %0.4f std: %0.4f\n' % (get_mean_std(mae_list)) + \
+                     'MAPE       | mean: %0.4f%% std: %0.4f%%\n' % (get_mean_std(mape_list)) + \
                      'CSI        | mean: %0.4f std: %0.4f\n' % (get_mean_std(csi_list)) + \
                      'POD        | mean: %0.4f std: %0.4f\n' % (get_mean_std(pod_list)) + \
-                     'FAR        | mean: %0.4f std: %0.4f\n' % (get_mean_std(far_list))
+                     'FAR        | mean: %0.4f std: %0.4f\n' % (get_mean_std(far_list)) + \
+                     '---------------------------------------\n' + \
+                     'Efficiency (mean +/- std over %d repeat(s)):\n' % exp_repeat + \
+                     'param_count       | %d\n' % param_count_list[0] + \
+                     'epoch_train_time  | mean: %0.2fs std: %0.2fs\n' % (get_mean_std(epoch_time_list)) + \
+                     'inference_latency | mean: %0.3fms/sample std: %0.3fms/sample\n' % (get_mean_std(inference_time_list)) + \
+                     'peak_memory       | mean: %0.1fMB std: %0.1fMB\n' % (get_mean_std(peak_memory_list))
 
     metric_fp = os.path.join(os.path.dirname(exp_model_dir), 'metric.txt')
     with open(metric_fp, 'w') as f:

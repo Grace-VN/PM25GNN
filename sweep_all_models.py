@@ -34,6 +34,15 @@ import sys
 import time
 import traceback
 
+try:
+    import psutil
+    _psutil_process = psutil.Process()
+except ImportError:
+    # peak_memory_mb reports NaN on CPU runs without it; GPU runs are
+    # unaffected (torch.cuda's own memory stats don't need psutil).
+    psutil = None
+    _psutil_process = None
+
 proj_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(proj_dir)
 
@@ -80,7 +89,17 @@ ALL_MODELS = [
     'ProbGRUModel5', 'ProbGRUModel6', 'ProbGRUModel7', 'ProbGRUModel8', 'ProbGRUModel9',
 ]
 
-METRIC_KEYS = ['train_loss', 'val_loss', 'test_loss', 'rmse', 'mae', 'csi', 'pod', 'far']
+ACCURACY_KEYS = ['train_loss', 'val_loss', 'test_loss', 'rmse', 'mae', 'mape', 'csi', 'pod', 'far']
+EFFICIENCY_KEYS = ['param_count', 'epoch_train_time_sec', 'inference_latency_ms', 'peak_memory_mb']
+METRIC_KEYS = ACCURACY_KEYS + EFFICIENCY_KEYS
+METRIC_UNITS = {'mape': '%', 'epoch_train_time_sec': 's', 'inference_latency_ms': 'ms/sample', 'peak_memory_mb': 'MB'}
+
+
+def _fmt_metric(k, mean, std):
+    if k == 'param_count':
+        return f'{k:22s} | {mean:.0f}'
+    unit = METRIC_UNITS.get(k, '')
+    return f'{k:22s} | mean: {mean:.4f}{unit}  std: {std:.4f}{unit}'
 
 
 def parse_args():
@@ -445,7 +464,51 @@ def get_metric(predict_epoch, label_epoch):
     label = label.reshape((-1, label.shape[-1]))
     mae = np.mean(np.mean(np.abs(predict - label), axis=1))
     rmse = np.mean(np.sqrt(np.mean(np.square(predict - label), axis=1)))
-    return rmse, mae, csi, pod, far
+    mape = get_mape(predict, label)
+    return rmse, mae, mape, csi, pod, far
+
+
+def get_mape(predict, label, eps_threshold=1.0):
+    """Mean Absolute Percentage Error, masking out |label| < eps_threshold
+    (ug/m3) - see train.py's get_mape for why (near-zero PM2.5 readings
+    make the percentage denominator meaningless, not a real error signal)."""
+    mask = np.abs(label) >= eps_threshold
+    if not np.any(mask):
+        return float('nan')
+    return float(np.mean(np.abs((predict[mask] - label[mask]) / label[mask])) * 100)
+
+
+def reset_peak_memory(device):
+    if device.type == 'cuda':
+        torch.cuda.reset_peak_memory_stats(device)
+        return 0.0
+    elif _psutil_process is not None:
+        return _psutil_process.memory_info().rss / 1e6
+    return float('nan')
+
+
+def peak_memory_mb(device, running_max=0.0):
+    if device.type == 'cuda':
+        return torch.cuda.max_memory_allocated(device) / 1e6
+    elif _psutil_process is not None:
+        return max(running_max, _psutil_process.memory_info().rss / 1e6)
+    return float('nan')
+
+
+def measure_inference_latency(test_loader, model, hist_len, device):
+    model.eval()
+    n_samples = 0
+    t0 = time.time()
+    with torch.no_grad():
+        for data in test_loader:
+            pm25, feature, time_arr = data
+            pm25 = pm25.to(device)
+            feature = feature.to(device)
+            pm25_hist = pm25[:, :hist_len]
+            model(pm25_hist, feature)
+            n_samples += pm25.shape[0]
+    elapsed = time.time() - t0
+    return (elapsed / n_samples * 1000) if n_samples else float('nan')
 
 
 def train_epoch(train_loader, model, optimizer, hist_len, device, criterion, kl_weight, alignment_weight):
@@ -524,10 +587,16 @@ def run_single_repeat(model_name, model, optimizer, train_loader, val_loader, te
     best_epoch = 0
     best = None
     train_loss = val_loss = None
+    param_count = sum(p.numel() for p in model.parameters())
+    epoch_times = []
+    running_peak_mb = reset_peak_memory(device)
 
     for epoch in range(args.epochs):
+        t0 = time.time()
         train_loss = train_epoch(train_loader, model, optimizer, args.hist_len, device, criterion, kl_weight, alignment_weight)
+        epoch_times.append(time.time() - t0)
         val_loss = val_epoch(val_loader, model, args.hist_len, device, criterion)
+        running_peak_mb = peak_memory_mb(device, running_peak_mb)
 
         if epoch - best_epoch > args.early_stop:
             break
@@ -536,9 +605,9 @@ def run_single_repeat(model_name, model, optimizer, train_loader, val_loader, te
             val_loss_min = val_loss
             best_epoch = epoch
             test_loss, predict_epoch, label_epoch, time_epoch = test_epoch(test_loader, model, args.hist_len, device, criterion, pm25_mean, pm25_std)
-            rmse, mae, csi, pod, far = get_metric(predict_epoch, label_epoch)
+            rmse, mae, mape, csi, pod, far = get_metric(predict_epoch, label_epoch)
             best = dict(train_loss=train_loss, val_loss=val_loss, test_loss=test_loss,
-                        rmse=rmse, mae=mae, csi=csi, pod=pod, far=far, epoch=epoch)
+                        rmse=rmse, mae=mae, mape=mape, csi=csi, pod=pod, far=far, epoch=epoch)
 
             if args.save_checkpoints or args.save_npy:
                 os.makedirs(repeat_dir, exist_ok=True)
@@ -551,9 +620,14 @@ def run_single_repeat(model_name, model, optimizer, train_loader, val_loader, te
 
     if best is None:
         test_loss, predict_epoch, label_epoch, time_epoch = test_epoch(test_loader, model, args.hist_len, device, criterion, pm25_mean, pm25_std)
-        rmse, mae, csi, pod, far = get_metric(predict_epoch, label_epoch)
+        rmse, mae, mape, csi, pod, far = get_metric(predict_epoch, label_epoch)
         best = dict(train_loss=train_loss, val_loss=val_loss, test_loss=test_loss,
-                    rmse=rmse, mae=mae, csi=csi, pod=pod, far=far, epoch=epoch)
+                    rmse=rmse, mae=mae, mape=mape, csi=csi, pod=pod, far=far, epoch=epoch)
+
+    best['param_count'] = param_count
+    best['epoch_train_time_sec'] = np.mean(epoch_times) if epoch_times else float('nan')
+    best['inference_latency_ms'] = measure_inference_latency(test_loader, model, args.hist_len, device)
+    best['peak_memory_mb'] = peak_memory_mb(device, running_peak_mb)
     return best
 
 
@@ -584,7 +658,8 @@ def run_for_model(model_name, args, ctx):
             for k in METRIC_KEYS:
                 per_repeat[k].append(result[k])
             n_ok += 1
-            print(f'test RMSE={result["rmse"]:.3f} MAE={result["mae"]:.3f} ({time.time() - t0:.0f}s)')
+            print(f'test RMSE={result["rmse"]:.3f} MAE={result["mae"]:.3f} MAPE={result["mape"]:.1f}% '
+                  f'params={result["param_count"]:.0f} ({time.time() - t0:.0f}s)')
         except Exception as e:
             print(f'FAILED: {type(e).__name__}: {e}')
             traceback.print_exc(limit=3)
@@ -608,7 +683,10 @@ def run_for_model(model_name, args, ctx):
         f'batch_size: {args.batch_size}  epochs(max): {args.epochs}  early_stop: {args.early_stop}  lr: {args.lr}\n'
         f'exp_repeat requested: {args.exp_repeat}  succeeded: {n_ok}\n'
         '=======================================================\n'
-        + '\n'.join(f'{k:10s} | mean: {summary[f"{k}_mean"]:.4f}  std: {summary[f"{k}_std"]:.4f}' for k in METRIC_KEYS) + '\n'
+        + '\n'.join(_fmt_metric(k, summary[f'{k}_mean'], summary[f'{k}_std']) for k in ACCURACY_KEYS) + '\n'
+        '-------------------------------------------------------\n'
+        'Efficiency:\n'
+        + '\n'.join(_fmt_metric(k, summary[f'{k}_mean'], summary[f'{k}_std']) for k in EFFICIENCY_KEYS) + '\n'
         f'=======================================================\n{model_repr}\n'
     )
     print(report)
