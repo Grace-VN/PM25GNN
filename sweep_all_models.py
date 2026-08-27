@@ -78,7 +78,7 @@ from model.probgru4 import ProbGRUModel4
 from model.probgru5 import ProbGRUModel5
 from model.probgru6 import ProbGRUModel6
 from model.probgru7 import ProbGRUModel7
-from model.probgru8 import ProbGRUModel8
+from model.airlapse import AirLapse
 from model.probgru9 import ProbGRUModel9
 
 ALL_MODELS = [
@@ -86,7 +86,7 @@ ALL_MODELS = [
     'PM25_GNN', 'PM25_GNN_nosub', 'AirFormer', 'Informer', 'Autoformer',
     'PatchTST', 'STAEformer', 'AirDDE', 'AirPhyNet', 'AirDualODE',
     'ProbGRUModel', 'ProbGRUModel2', 'ProbGRUModel3', 'ProbGRUModel4',
-    'ProbGRUModel5', 'ProbGRUModel6', 'ProbGRUModel7', 'ProbGRUModel8', 'ProbGRUModel9',
+    'ProbGRUModel5', 'ProbGRUModel6', 'ProbGRUModel7', 'AirLapse', 'ProbGRUModel9',
 ]
 
 ACCURACY_KEYS = ['train_loss', 'val_loss', 'test_loss', 'rmse', 'mae', 'mape', 'csi', 'pod', 'far']
@@ -402,8 +402,8 @@ def get_model(exp_model, hist_len, pred_len, in_dim, city_num, batch_size, devic
             sigma_tau_init_h=config['experiments'].get('gru_sigma_tau_init_h', 3.0),
             dt_hours=config['experiments'].get('gru_dt_hours', 3.0),
         )
-    elif exp_model == 'ProbGRUModel8':
-        return ProbGRUModel8(
+    elif exp_model == 'AirLapse':
+        return AirLapse(
             hist_len, pred_len, in_dim, city_num, batch_size, device,
             graph.edge_index, graph.edge_attr, wind_mean, wind_std,
             station_coords=coords, station_elevation=altitude,

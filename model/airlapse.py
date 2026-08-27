@@ -172,8 +172,12 @@ class MultiLagPhysicsAwareSpatialAttention(nn.Module):
         return torch.bmm(weights, v)
 
 
-class ProbGRUModel8(nn.Module):
+class AirLapse(nn.Module):
     """
+    Named AirLapse for publication (internally this was ProbGRUModel8, the
+    8th iteration of this repo's probgru lineage - see probgru9.py's
+    docstring for what came after, which still refers to this one as v8).
+
     ProbGRUModel4, unchanged everywhere except its spatial mixing step,
     which is now MultiLagPhysicsAwareSpatialAttention (see that class's
     docstring for what changed and, just as importantly, what deliberately
@@ -210,7 +214,7 @@ class ProbGRUModel8(nn.Module):
                  spatial_mix_mode='bottleneck', max_lag=6,
                  dist_threshold_km=300.0, sigma_d=200.0, sigma_h=1200.0,
                  sigma_tau_init_h=3.0, dt_hours=3.0):
-        super(ProbGRUModel8, self).__init__()
+        super(AirLapse, self).__init__()
         assert spatial_mix_mode in ('bottleneck', 'per_step'), \
             f"spatial_mix_mode must be 'bottleneck' or 'per_step', got {spatial_mix_mode}"
         if spatial_mix_mode == 'per_step' and num_layers != 1:
@@ -351,7 +355,7 @@ class ProbGRUModel8(nn.Module):
         B, T, N, C = inputs.shape
         if N != self.city_num:
             raise ValueError(
-                f"ProbGRUModel8 was built with city_num={self.city_num}, but got "
+                f"AirLapse was built with city_num={self.city_num}, but got "
                 f"N={N} nodes in this batch's data."
             )
         if feature_future.shape[1] != self.pred_len:

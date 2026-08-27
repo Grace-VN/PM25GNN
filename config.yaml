@@ -18,14 +18,14 @@ experiments:
 #  model: nodesFC_GRU
 #  model: PM25_GNN
 #  model: PM25_GNN_nosub
-#  model: AirFormer
+#  model: AirFormer2023
 #  model: Informer
 #  model: Autoformer
 #  model: PatchTST
-#  model: STAEformer
-#  model: AirDDE
-#  model: AirPhyNet
-#  model: AirDualODE
+#  model: STAEformer2023
+#  model: AirDDE2026
+#  model: AirPhyNet2024
+#  model: AirDualODE2025
 #  model: ProbGRUModel
 #  model: ProbGRUModel2
 #  model: ProbGRUModel3
@@ -33,7 +33,7 @@ experiments:
 #  model: ProbGRUModel5
 #  model: ProbGRUModel6
 #  model: ProbGRUModel7
-#  model: ProbGRUModel8
+#  model: AirLapse
 #  model: ProbGRUModel9
 
 train:

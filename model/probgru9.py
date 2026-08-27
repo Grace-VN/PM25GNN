@@ -34,7 +34,7 @@ def _inv_softplus(y):
 
 class FickianMultiLagSpatialAttention(nn.Module):
     """
-    probgru8's MultiLagPhysicsAwareSpatialAttention, with its two
+    AirLapse's (formerly probgru8's) MultiLagPhysicsAwareSpatialAttention, with its two
     time/distance-related biases - the static isotropic `dist_bias =
     exp(-d/sigma_d)` inherited unchanged since v1, and the ad hoc
     `lag_bias` Gaussian match between k*dt_hours and the wind-implied
@@ -171,7 +171,7 @@ class FickianMultiLagSpatialAttention(nn.Module):
 
 class ProbGRUModel9(nn.Module):
     """
-    ProbGRUModel8 with its spatial mixing step's distance/lag biases
+    AirLapse (formerly ProbGRUModel8) with its spatial mixing step's distance/lag biases
     replaced by FickianMultiLagSpatialAttention's Fick's-law-derived
     kernel (see that class's docstring). Everything else - the encoder's
     bottleneck/per_step fork reusing `nn.GRU`'s full per-step output as
