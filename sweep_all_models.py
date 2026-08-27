@@ -79,6 +79,7 @@ from model.probgru5 import ProbGRUModel5
 from model.probgru6 import ProbGRUModel6
 from model.probgru7 import ProbGRUModel7
 from model.airlapse import AirLapse
+from model.mgsfformer import MGSFformerPM25
 from model.probgru9 import ProbGRUModel9
 
 ALL_MODELS = [
@@ -87,6 +88,7 @@ ALL_MODELS = [
     'PatchTST', 'STAEformer', 'AirDDE', 'AirPhyNet', 'AirDualODE',
     'ProbGRUModel', 'ProbGRUModel2', 'ProbGRUModel3', 'ProbGRUModel4',
     'ProbGRUModel5', 'ProbGRUModel6', 'ProbGRUModel7', 'AirLapse', 'ProbGRUModel9',
+    'MGSFformer',
 ]
 
 ACCURACY_KEYS = ['train_loss', 'val_loss', 'test_loss', 'rmse', 'mae', 'mape', 'csi', 'pod', 'far']
@@ -441,6 +443,17 @@ def get_model(exp_model, hist_len, pred_len, in_dim, city_num, batch_size, devic
             diffusivity_init_km2h=config['experiments'].get('gru_diffusivity_init_km2h', 50.0),
             sigma_min_km=config['experiments'].get('gru_sigma_min_km', 15.0),
             dt_hours=config['experiments'].get('gru_dt_hours', 3.0),
+        )
+    elif exp_model == 'MGSFformer':
+        # Target-only baseline: unlike every other model here, MGSFformer's
+        # published architecture doesn't take `feature` (meteorological
+        # covariates) at all - see model/mgsfformer.py's docstring for why
+        # that's a deliberate choice, not an oversight.
+        return MGSFformerPM25(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            ie_dim=config['experiments'].get('mgsfformer_ie_dim', 8),
+            dropout=config['experiments'].get('mgsfformer_dropout', 0.1),
+            num_head=config['experiments'].get('mgsfformer_num_head', 4),
         )
     else:
         raise Exception('Wrong model name!')

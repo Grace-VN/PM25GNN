@@ -35,6 +35,7 @@ experiments:
 #  model: ProbGRUModel7
 #  model: AirLapse
 #  model: ProbGRUModel9
+#  model: MGSFformer
 
 train:
   batch_size: 32
