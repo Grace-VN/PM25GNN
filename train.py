@@ -756,7 +756,13 @@ def main():
                      'inference_latency | mean: %0.3fms/sample std: %0.3fms/sample\n' % (get_mean_std(inference_time_list)) + \
                      'peak_memory       | mean: %0.1fMB std: %0.1fMB\n' % (get_mean_std(peak_memory_list))
 
-    metric_fp = os.path.join(os.path.dirname(exp_model_dir), 'metric.txt')
+    # {model}_{hist_len}_{pred_len}_{dataset_num}.txt - a plain "metric.txt"
+    # loses all identifying info the moment it's copied out of its (already
+    # quite deep) results_dir/{hist_len}_{pred_len}/{dataset_num}/{model}/
+    # {exp_time}/ folder; this makes a flat pile of these files still
+    # self-describing. No collision risk across runs - exp_time already
+    # makes the parent directory unique per invocation.
+    metric_fp = os.path.join(os.path.dirname(exp_model_dir), '%s_%s_%s_%s.txt' % (model_name, hist_len, pred_len, dataset_num))
     with open(metric_fp, 'w') as f:
         f.write(exp_info)
         f.write(str(model))
