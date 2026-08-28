@@ -16,3 +16,10 @@ geopy
 MetPy
 bresenham
 psutil            # peak-memory reporting on CPU runs (GPU runs use torch.cuda's own stats)
+
+# notebooks/EDA_temporal_spatial.ipynb
+pandas
+matplotlib
+seaborn
+statsmodels       # ACF/PACF plots
+jupyter

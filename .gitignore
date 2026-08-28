@@ -131,6 +131,7 @@ dmypy.json
 .idea
 
 results/
+reports/
 *.pth
 *.npy
 KnowAir.npy
