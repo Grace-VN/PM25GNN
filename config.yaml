@@ -27,6 +27,7 @@ experiments:
 #  model: AirPhyNet2024
 #  model: AirDualODE2025
 #  model: AirLapse
+#  model: AirLapse2
 #  model: MGSFformer
 #  model: TimeXer
 #  model: AGCRN
