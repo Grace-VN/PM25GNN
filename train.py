@@ -24,6 +24,7 @@ from model.airdualode import AirDualODEPM25
 from model.airlapse import AirLapse
 from model.airlapse2 import AirLapse2
 from model.airlapse3 import AirLapse3
+from model.airlapse4 import AirLapse4
 from model.mgsfformer import MGSFformerPM25
 from model.timexer import TimeXerPM25
 from model.agcrn import AGCRNPM25
@@ -376,6 +377,35 @@ def get_model():
             sigma_h=config['experiments'].get('gru3_sigma_h', 1200.0),
             sigma_tau_init_h=config['experiments'].get('gru3_sigma_tau_init_h', 3.0),
             dt_hours=config['experiments'].get('gru3_dt_hours', 3.0),
+        )
+    elif exp_model == 'AirLapse4':
+        # AirLapse3 with its explicit transport estimate upgraded to the 1D
+        # advection-diffusion Green's function (model/airlapse4.py) -
+        # identical elsewhere, so it reuses AirLapse3's gru_* config keys
+        # under a gru4_* prefix (independently tunable, same defaults)
+        # plus the two new diffusion hyperparameters.
+        return AirLapse4(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
+            station_coords=coords,
+            station_elevation=altitude,
+            feature_mean=train_data.feature_mean,
+            feature_std=train_data.feature_std,
+            hidden_dim=config['experiments'].get('gru4_hidden_dim', 64),
+            latent_dim=config['experiments'].get('gru4_latent_dim', 16),
+            attn_dim=config['experiments'].get('gru4_attn_dim', 32),
+            num_layers=config['experiments'].get('gru4_num_layers', 1),
+            dropout=config['experiments'].get('gru4_dropout', 0.1),
+            logvar_clamp=config['experiments'].get('gru4_logvar_clamp', 10.0),
+            spatial_mix_mode=config['experiments'].get('gru4_spatial_mix_mode', 'bottleneck'),
+            max_lag=config['experiments'].get('gru4_max_lag', 6),
+            dist_threshold_km=config['experiments'].get('gru4_dist_threshold_km', 300.0),
+            sigma_d=config['experiments'].get('gru4_sigma_d', 200.0),
+            sigma_h=config['experiments'].get('gru4_sigma_h', 1200.0),
+            sigma_tau_init_h=config['experiments'].get('gru4_sigma_tau_init_h', 3.0),
+            dt_hours=config['experiments'].get('gru4_dt_hours', 3.0),
+            diffusivity_km2_per_hour_init=config['experiments'].get('gru4_diffusivity_km2_per_hour_init', 50.0),
+            t_eps_hours=config['experiments'].get('gru4_t_eps_hours', 0.25),
         )
     elif exp_model == 'MGSFformer':
         # Target-only baseline: unlike every other model here, MGSFformer's
