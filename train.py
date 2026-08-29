@@ -27,6 +27,7 @@ from model.airlapse3 import AirLapse3
 from model.airlapse4 import AirLapse4
 from model.airlapse5 import AirLapse5
 from model.airlapse6 import AirLapse6
+from model.airlapse7 import AirLapse7
 from model.mgsfformer import MGSFformerPM25
 from model.timexer import TimeXerPM25
 from model.agcrn import AGCRNPM25
@@ -442,6 +443,36 @@ def get_model():
             diffusivity_crosswind_km2_per_hour_init=config['experiments'].get(
                 'gru6_diffusivity_crosswind_km2_per_hour_init', 50.0),
             t_eps_hours=config['experiments'].get('gru6_t_eps_hours', 0.25),
+        )
+    elif exp_model == 'AirLapse7':
+        # AirLapse4 with the explicit transport estimate's cross-neighbor
+        # aggregation replaced by a second softmax stage instead of an
+        # additive sum - an ablation testing whether a competing-budget
+        # aggregation across sources beats the physically-motivated
+        # additive one (model/airlapse7.py). Reuses AirLapse4's gru_*
+        # config keys under a gru7_* prefix.
+        return AirLapse7(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
+            station_coords=coords,
+            station_elevation=altitude,
+            feature_mean=train_data.feature_mean,
+            feature_std=train_data.feature_std,
+            hidden_dim=config['experiments'].get('gru7_hidden_dim', 64),
+            latent_dim=config['experiments'].get('gru7_latent_dim', 16),
+            attn_dim=config['experiments'].get('gru7_attn_dim', 32),
+            num_layers=config['experiments'].get('gru7_num_layers', 1),
+            dropout=config['experiments'].get('gru7_dropout', 0.1),
+            logvar_clamp=config['experiments'].get('gru7_logvar_clamp', 10.0),
+            spatial_mix_mode=config['experiments'].get('gru7_spatial_mix_mode', 'bottleneck'),
+            max_lag=config['experiments'].get('gru7_max_lag', 6),
+            dist_threshold_km=config['experiments'].get('gru7_dist_threshold_km', 300.0),
+            sigma_d=config['experiments'].get('gru7_sigma_d', 200.0),
+            sigma_h=config['experiments'].get('gru7_sigma_h', 1200.0),
+            sigma_tau_init_h=config['experiments'].get('gru7_sigma_tau_init_h', 3.0),
+            dt_hours=config['experiments'].get('gru7_dt_hours', 3.0),
+            diffusivity_km2_per_hour_init=config['experiments'].get('gru7_diffusivity_km2_per_hour_init', 50.0),
+            t_eps_hours=config['experiments'].get('gru7_t_eps_hours', 0.25),
         )
     elif exp_model == 'AirLapse5':
         # AirLapse4 with the learned attention's lag_bias score term (and
