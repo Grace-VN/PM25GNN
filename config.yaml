@@ -30,6 +30,7 @@ experiments:
 #  model: AirLapse2
 #  model: AirLapse3
 #  model: AirLapse4
+#  model: AirLapse5
 #  model: MGSFformer
 #  model: TimeXer
 #  model: AGCRN
