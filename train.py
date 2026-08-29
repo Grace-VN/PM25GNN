@@ -26,6 +26,7 @@ from model.airlapse2 import AirLapse2
 from model.airlapse3 import AirLapse3
 from model.airlapse4 import AirLapse4
 from model.airlapse5 import AirLapse5
+from model.airlapse6 import AirLapse6
 from model.mgsfformer import MGSFformerPM25
 from model.timexer import TimeXerPM25
 from model.agcrn import AGCRNPM25
@@ -407,6 +408,40 @@ def get_model():
             dt_hours=config['experiments'].get('gru4_dt_hours', 3.0),
             diffusivity_km2_per_hour_init=config['experiments'].get('gru4_diffusivity_km2_per_hour_init', 50.0),
             t_eps_hours=config['experiments'].get('gru4_t_eps_hours', 0.25),
+        )
+    elif exp_model == 'AirLapse6':
+        # AirLapse4 with its transport estimate upgraded to a full 2D
+        # downwind/crosswind advection-diffusion decomposition, instead of
+        # AirLapse4's 1D projection onto the fixed source-receiver line
+        # (model/airlapse6.py). The learned attention (including lag_bias)
+        # is unchanged from AirLapse4. Reuses AirLapse4's gru_* config keys
+        # under a gru6_* prefix, with one isotropic diffusivity replaced by
+        # two (downwind/crosswind).
+        return AirLapse6(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
+            station_coords=coords,
+            station_elevation=altitude,
+            feature_mean=train_data.feature_mean,
+            feature_std=train_data.feature_std,
+            hidden_dim=config['experiments'].get('gru6_hidden_dim', 64),
+            latent_dim=config['experiments'].get('gru6_latent_dim', 16),
+            attn_dim=config['experiments'].get('gru6_attn_dim', 32),
+            num_layers=config['experiments'].get('gru6_num_layers', 1),
+            dropout=config['experiments'].get('gru6_dropout', 0.1),
+            logvar_clamp=config['experiments'].get('gru6_logvar_clamp', 10.0),
+            spatial_mix_mode=config['experiments'].get('gru6_spatial_mix_mode', 'bottleneck'),
+            max_lag=config['experiments'].get('gru6_max_lag', 6),
+            dist_threshold_km=config['experiments'].get('gru6_dist_threshold_km', 300.0),
+            sigma_d=config['experiments'].get('gru6_sigma_d', 200.0),
+            sigma_h=config['experiments'].get('gru6_sigma_h', 1200.0),
+            sigma_tau_init_h=config['experiments'].get('gru6_sigma_tau_init_h', 3.0),
+            dt_hours=config['experiments'].get('gru6_dt_hours', 3.0),
+            diffusivity_downwind_km2_per_hour_init=config['experiments'].get(
+                'gru6_diffusivity_downwind_km2_per_hour_init', 50.0),
+            diffusivity_crosswind_km2_per_hour_init=config['experiments'].get(
+                'gru6_diffusivity_crosswind_km2_per_hour_init', 50.0),
+            t_eps_hours=config['experiments'].get('gru6_t_eps_hours', 0.25),
         )
     elif exp_model == 'AirLapse5':
         # AirLapse4 with the learned attention's lag_bias score term (and
