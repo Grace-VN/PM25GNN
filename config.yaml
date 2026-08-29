@@ -26,17 +26,11 @@ experiments:
 #  model: AirDDE2026
 #  model: AirPhyNet2024
 #  model: AirDualODE2025
-#  model: ProbGRUModel
-#  model: ProbGRUModel2
-#  model: ProbGRUModel3
-#  model: ProbGRUModel4
-#  model: ProbGRUModel5
-#  model: ProbGRUModel6
-#  model: ProbGRUModel7
 #  model: AirLapse
-#  model: ProbGRUModel9
 #  model: MGSFformer
 #  model: TimeXer
+#  model: AGCRN
+#  model: MegaCRN
 
 train:
   batch_size: 32
