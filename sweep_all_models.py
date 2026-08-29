@@ -80,6 +80,7 @@ from model.probgru6 import ProbGRUModel6
 from model.probgru7 import ProbGRUModel7
 from model.airlapse import AirLapse
 from model.mgsfformer import MGSFformerPM25
+from model.timexer import TimeXerPM25
 from model.probgru9 import ProbGRUModel9
 
 ALL_MODELS = [
@@ -88,7 +89,7 @@ ALL_MODELS = [
     'PatchTST', 'STAEformer', 'AirDDE', 'AirPhyNet', 'AirDualODE',
     'ProbGRUModel', 'ProbGRUModel2', 'ProbGRUModel3', 'ProbGRUModel4',
     'ProbGRUModel5', 'ProbGRUModel6', 'ProbGRUModel7', 'AirLapse', 'ProbGRUModel9',
-    'MGSFformer',
+    'MGSFformer', 'TimeXer',
 ]
 
 ACCURACY_KEYS = ['train_loss', 'val_loss', 'test_loss', 'rmse', 'mae', 'mape', 'csi', 'pod', 'far']
@@ -454,6 +455,24 @@ def get_model(exp_model, hist_len, pred_len, in_dim, city_num, batch_size, devic
             ie_dim=config['experiments'].get('mgsfformer_ie_dim', 8),
             dropout=config['experiments'].get('mgsfformer_dropout', 0.1),
             num_head=config['experiments'].get('mgsfformer_num_head', 4),
+        )
+    elif exp_model == 'TimeXer':
+        # History-only baseline like MGSFformer above: TimeXer's published
+        # architecture is encoder-only, with no decoder input point for
+        # feature's FUTURE portion - see model/timexer.py's docstring.
+        # It does use feature's historical portion as exogenous covariates
+        # though, unlike MGSFformer's target-only design.
+        return TimeXerPM25(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            patch_len=config['experiments'].get('timexer_patch_len', 8),
+            d_model=config['experiments'].get('timexer_d_model', 128),
+            n_heads=config['experiments'].get('timexer_n_heads', 8),
+            e_layers=config['experiments'].get('timexer_e_layers', 2),
+            d_ff=config['experiments'].get('timexer_d_ff', 256),
+            dropout=config['experiments'].get('timexer_dropout', 0.1),
+            factor=config['experiments'].get('timexer_factor', 5),
+            activation=config['experiments'].get('timexer_activation', 'gelu'),
+            use_norm=config['experiments'].get('timexer_use_norm', True),
         )
     else:
         raise Exception('Wrong model name!')
