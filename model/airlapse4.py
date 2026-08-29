@@ -156,10 +156,13 @@ class MultiLagPhysicsAwareSpatialAttention(nn.Module):
         # layout - see forward()
         self.register_buffer('bearing_j_i', bearing_deg(station_coords).t())
 
-        # zeroes the self (i == j) pair for the transport estimate only -
-        # does not touch the content+physics attention path above, where a
-        # station attending to its own recent history is normal/intended.
-        self.register_buffer('_not_self', ~torch.eye(dist.shape[0], dtype=torch.bool))
+        # neighbor_mask with the diagonal zeroed, precomputed once - used
+        # only by the explicit transport estimate below (not by the
+        # content+physics attention path above, where a station attending
+        # to its own recent history via neighbor_mask alone is normal/
+        # intended, so that mask is kept separate and untouched).
+        not_self = ~torch.eye(dist.shape[0], dtype=torch.bool)
+        self.register_buffer('transport_mask', neighbor_mask & not_self)
 
     def forward(self, h_last, h_lag, travel_bearing_lag, wind_speed_kmh_lag, k_hours, pm25_lag):
         """
@@ -184,7 +187,10 @@ class MultiLagPhysicsAwareSpatialAttention(nn.Module):
 
         # theta: angle between SOURCE i's wind (at lag k) and bearing i->j
         angle_diff = travel_bearing_lag.unsqueeze(2) - self.bearing_j_i.view(1, 1, N, N)  # [B,K,N_j,N_i]
-        wind_align = torch.clamp(torch.cos(angle_diff), min=0.0)
+        cos_theta = torch.cos(angle_diff)                                 # SIGNED - shared by wind_align below
+        # and the transport estimate's v_radial further down (that one
+        # needs the sign kept; this clamp is only for the score bonus).
+        wind_align = torch.clamp(cos_theta, min=0.0)
 
         speed = wind_speed_kmh_lag.clamp(min=0.0)
         tau = self.dist_km.view(1, 1, N, N) / (speed.unsqueeze(2) + self.speed_floor_kmh)  # [B,K,N_j,N_i]
@@ -216,8 +222,7 @@ class MultiLagPhysicsAwareSpatialAttention(nn.Module):
         # --- explicit physical transport estimate: 1D advection-diffusion
         # Green's function (see class docstring) - independent of, and not
         # feeding back into, the learned attention above. ---
-        cos_theta = torch.cos(angle_diff)                                 # SIGNED (no clamp) - [B,K,N_j,N_i]
-        v_radial = speed.unsqueeze(2) * cos_theta                         # [B,K,N_j,N_i], toward-receiver speed
+        v_radial = speed.unsqueeze(2) * cos_theta                         # [B,K,N_j,N_i], toward-receiver speed (signed)
         t_eff = k_hours_b + self.t_eps_hours                              # [1,K,1,1], keeps t=0 well-defined
         D = F.softplus(self.log_D) + 1e-6
         d = self.dist_km.view(1, 1, N, N)
@@ -226,11 +231,7 @@ class MultiLagPhysicsAwareSpatialAttention(nn.Module):
             * torch.exp(-((d - v_radial * t_eff) ** 2) / (4.0 * D * t_eff))
         )                                                                  # [B, K, N_receiver, N_source]
 
-        w_transport = (
-            self.neighbor_mask.to(green.dtype).view(1, 1, N, N)
-            * self._not_self.to(green.dtype).view(1, 1, N, N)
-            * green
-        )
+        w_transport = self.transport_mask.to(green.dtype).view(1, 1, N, N) * green
 
         pi = w_transport / (w_transport.sum(dim=1, keepdim=True) + 1e-8)  # sums to 1 over k
         transport_from_source = torch.einsum('bkij,bkj->bij', pi, pm25_lag)  # [B, N_receiver, N_source]
