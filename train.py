@@ -47,6 +47,36 @@ except ImportError:
     psutil = None
     _psutil_process = None
 
+# Numbering + publication year for each benchmark, matching config.yaml's
+# commented model catalog exactly (same grouping: generic neural-network/
+# graph architectures, generic transformers, air-quality-forecasting-
+# domain-specific models, AirLapse last) - keep the two in sync if either
+# changes. Used only to label the saved report file below; has no effect
+# on model selection/dispatch (that's still the plain exp_model string).
+MODEL_CATALOG = {
+    'MLP': (1, 1986), 'LSTM': (2, 1997), 'GRU': (3, 2014),
+    'AGCRN': (4, 2020), 'MegaCRN': (5, 2023),
+    'Informer': (6, 2021), 'Autoformer': (7, 2021), 'PatchTST': (8, 2023),
+    'STAEformer': (9, 2023), 'MGSFformer': (10, 2025), 'TimeXer': (11, 2024),
+    'PM25_GNN': (12, 2020), 'PM25_GNN_nosub': (13, 2020),
+    'GC_LSTM': (14, 2020), 'nodesFC_GRU': (15, 2020),
+    'AirDDE': (16, 2026), 'AirPhyNet': (17, 2024), 'AirDualODE': (18, 2025),
+    'AirFormer': (19, 2023),
+    'AirLapse': (20, 2026),
+}
+
+
+def _catalog_label(exp_model_name):
+    """'AirLapse' -> '20. AirLapse 2026' (falls back to the plain name if
+    exp_model_name isn't in MODEL_CATALOG, e.g. right after adding a new
+    model here before its catalog entry is added)."""
+    entry = MODEL_CATALOG.get(exp_model_name)
+    if entry is None:
+        return exp_model_name
+    order, year = entry
+    return '%d. %s %d' % (order, exp_model_name, year)
+
+
 torch.set_num_threads(1)
 use_cuda = torch.cuda.is_available()
 device = torch.device('cuda' if use_cuda else 'cpu')
@@ -637,13 +667,18 @@ def main():
                      'inference_latency | mean: %0.3fms/sample std: %0.3fms/sample\n' % (get_mean_std(inference_time_list)) + \
                      'peak_memory       | mean: %0.1fMB std: %0.1fMB\n' % (get_mean_std(peak_memory_list))
 
-    # {model}_{hist_len}_{pred_len}_{dataset_num}.txt - a plain "metric.txt"
-    # loses all identifying info the moment it's copied out of its (already
-    # quite deep) results_dir/{hist_len}_{pred_len}/{dataset_num}/{model}/
-    # {exp_time}/ folder; this makes a flat pile of these files still
-    # self-describing. No collision risk across runs - exp_time already
-    # makes the parent directory unique per invocation.
-    metric_fp = os.path.join(os.path.dirname(exp_model_dir), '%s_%s_%s_%s.txt' % (model_name, hist_len, pred_len, dataset_num))
+    # "{order}. {name} {year}_{hist_len}_{pred_len}_{dataset_num}.txt" - a
+    # plain "metric.txt" loses all identifying info the moment it's copied
+    # out of its (already quite deep) results_dir/{hist_len}_{pred_len}/
+    # {dataset_num}/{model}/{exp_time}/ folder; this makes a flat pile of
+    # these files still self-describing, AND keeps them consistent with
+    # config.yaml's numbered/year-annotated model catalog. Built from
+    # exp_model (the config.yaml dispatch string, e.g. 'Informer'), not
+    # model_name (the model class's own __name__, e.g. 'InformerPM25' for
+    # several benchmarks here) - exp_model is what actually matches the
+    # catalog. No collision risk across runs - exp_time already makes the
+    # parent directory unique per invocation.
+    metric_fp = os.path.join(os.path.dirname(exp_model_dir), '%s_%s_%s_%s.txt' % (_catalog_label(exp_model), hist_len, pred_len, dataset_num))
     with open(metric_fp, 'w') as f:
         f.write(exp_info)
         f.write(str(model))
