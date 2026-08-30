@@ -42,10 +42,11 @@ WHAT IT DOES
      train.py's own "N. AirLapse YYYY_hist_pred_dataset.txt" naming) every
      other benchmark in this repo gets, rather than a search-only number.
 
-Search-phase tqdm progress bars are silenced (there can be
-n_trials * search_epochs of them - unreadable otherwise); the final
-retrain's own progress bars are left exactly as train.py normally prints
-them.
+train.py's own console output is already trimmed to one line per run
+("Model: ... | Dataset: ... | hist_len: ... | pred_len: ..."), so
+n_trials * search_epochs worth of trials stays readable on Colab without
+any extra silencing here - Optuna's own "Trial N finished..." line is
+the only per-trial output.
 """
 import argparse
 import os
@@ -167,9 +168,6 @@ def main():
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    original_tqdm = T.tqdm
-    T.tqdm = lambda iterable, **kwargs: iterable  # silence per-batch bars during the search - see module docstring
-
     sampler = optuna.samplers.TPESampler(seed=args.seed)
     pruner = optuna.pruners.MedianPruner(n_warmup_steps=3)
     study = optuna.create_study(
@@ -188,8 +186,6 @@ def main():
         lambda trial: run_trial(trial, args.search_epochs, args.search_early_stop),
         n_trials=args.n_trials,
     )
-
-    T.tqdm = original_tqdm
 
     print('\n' + '=' * 70)
     print(f'Hyperparameter search complete - {len(study.trials)} total trial(s) recorded')

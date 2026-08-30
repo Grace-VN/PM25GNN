@@ -32,7 +32,6 @@ from model.megacrn import MegaCRNPM25
 import arrow
 import torch
 from torch import nn
-from tqdm import tqdm
 import numpy as np
 import pickle
 import glob
@@ -486,7 +485,7 @@ def get_model():
 def train(train_loader, model, optimizer):
     model.train()
     train_loss = 0
-    for batch_idx, data in tqdm(enumerate(train_loader)):
+    for batch_idx, data in enumerate(train_loader):
         optimizer.zero_grad()
         pm25, feature, time_arr = data
         pm25 = pm25.to(device)
@@ -525,7 +524,7 @@ def train(train_loader, model, optimizer):
 def val(val_loader, model):
     model.eval()
     val_loss = 0
-    for batch_idx, data in tqdm(enumerate(val_loader)):
+    for batch_idx, data in enumerate(val_loader):
         pm25, feature, time_arr = data
         pm25 = pm25.to(device)
         feature = feature.to(device)
@@ -623,7 +622,14 @@ def measure_inference_latency(test_loader, model):
 
 def main():
     exp_info = get_exp_info()
-    print(exp_info)
+    # Colab (and other captured/non-TTY runners) has a per-cell output-line
+    # cap (~5000 lines) - the old per-batch tqdm bars and per-epoch dumps
+    # blew past that on any real run and killed the cell outright. Console
+    # output is trimmed to this one line; the full exp_info/model summary/
+    # metrics (everything that used to scroll by above) still gets written
+    # to metric_fp below exactly as before, so nothing is actually lost -
+    # it just isn't echoed to stdout during training.
+    print('Model: %s | Dataset: %s | hist_len: %s | pred_len: %s' % (exp_model, dataset_num, hist_len, pred_len))
 
     exp_time = arrow.now().format('YYYYMMDDHHmmss')
 
@@ -633,8 +639,6 @@ def main():
     param_count_list, epoch_time_list, inference_time_list, peak_memory_list = [], [], [], []
 
     for exp_idx in range(exp_repeat):
-        print('\nNo.%2d experiment ~~~' % exp_idx)
-
         train_loader = torch.utils.data.DataLoader(train_data, batch_size=batch_size, shuffle=True, drop_last=True)
         val_loader = torch.utils.data.DataLoader(val_data, batch_size=batch_size, shuffle=False, drop_last=True)
         test_loader = torch.utils.data.DataLoader(test_data, batch_size=batch_size, shuffle=False, drop_last=True)
@@ -643,9 +647,6 @@ def main():
         model = model.to(device)
         model_name = type(model).__name__
         param_count = sum(p.numel() for p in model.parameters())
-
-        print(str(model))
-        print('param_count: %d' % param_count)
 
         optimizer = torch.optim.RMSprop(model.parameters(), lr=lr, weight_decay=weight_decay)
 
@@ -662,16 +663,11 @@ def main():
         running_peak_mb = reset_peak_memory()
 
         for epoch in range(epochs):
-            print('\nTrain epoch %s:' % (epoch))
-
             t0 = time.time()
             train_loss = train(train_loader, model, optimizer)
             epoch_times.append(time.time() - t0)
             val_loss = val(val_loader, model)
             running_peak_mb = peak_memory_mb(running_peak_mb)
-
-            print('train_loss: %.4f' % train_loss)
-            print('val_loss: %.4f' % val_loss)
 
             if epoch - best_epoch > early_stop:
                 break
@@ -679,14 +675,11 @@ def main():
             if val_loss < val_loss_min:
                 val_loss_min = val_loss
                 best_epoch = epoch
-                print('Minimum val loss!!!')
                 torch.save(model.state_dict(), model_fp)
-                print('Save model: %s' % model_fp)
 
                 test_loss, predict_epoch, label_epoch, time_epoch = test(test_loader, model)
                 train_loss_, val_loss_ = train_loss, val_loss
                 rmse, mae, mape, csi, pod, far = get_metric(predict_epoch, label_epoch)
-                print('Train loss: %0.4f, Val loss: %0.4f, Test loss: %0.4f, RMSE: %0.2f, MAE: %0.2f, MAPE: %0.2f%%, CSI: %0.4f, POD: %0.4f, FAR: %0.4f' % (train_loss_, val_loss_, test_loss, rmse, mae, mape, csi, pod, far))
 
                 if save_npy:
                     np.save(os.path.join(exp_model_dir, 'predict.npy'), predict_epoch)
@@ -709,14 +702,6 @@ def main():
         epoch_time_list.append(np.mean(epoch_times) if epoch_times else float('nan'))
         inference_time_list.append(inference_time_ms)
         peak_memory_list.append(running_peak_mb)
-
-        print('\nNo.%2d experiment results:' % exp_idx)
-        print(
-            'Train loss: %0.4f, Val loss: %0.4f, Test loss: %0.4f, RMSE: %0.2f, MAE: %0.2f, MAPE: %0.2f%%, CSI: %0.4f, POD: %0.4f, FAR: %0.4f' % (
-            train_loss_, val_loss_, test_loss, rmse, mae, mape, csi, pod, far))
-        print(
-            'param_count: %d, avg epoch train time: %0.2fs, inference: %0.3fms/sample, peak memory: %0.1fMB' % (
-            param_count, epoch_time_list[-1], inference_time_ms, running_peak_mb))
 
     exp_metric_str = '---------------------------------------\n' + \
                      'train_loss | mean: %0.4f std: %0.4f\n' % (get_mean_std(train_loss_list)) + \
@@ -752,10 +737,8 @@ def main():
         f.write(str(model))
         f.write(exp_metric_str)
 
-    print('=========================\n')
-    print(exp_info)
-    print(exp_metric_str)
-    print(str(model))
+    # One more line, not a wall of them - full results (exp_info, model
+    # summary, all metrics) live in this file, same as always.
     print(metric_fp)
 
 
