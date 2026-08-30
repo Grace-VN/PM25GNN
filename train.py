@@ -53,27 +53,33 @@ except ImportError:
 # domain-specific models, AirLapse last) - keep the two in sync if either
 # changes. Used only to label the saved report file below; has no effect
 # on model selection/dispatch (that's still the plain exp_model string).
+# PM25_GNN_nosub/GC_LSTM/nodesFC_GRU are deliberately unnumbered (order
+# None - PM25_GNN ablation/baseline-suite siblings, not separately
+# ranked); numbering runs 1-17 across the rest.
 MODEL_CATALOG = {
     'MLP': (1, 1986), 'LSTM': (2, 1997), 'GRU': (3, 2014),
     'AGCRN': (4, 2020), 'MegaCRN': (5, 2023),
     'Informer': (6, 2021), 'Autoformer': (7, 2021), 'PatchTST': (8, 2023),
     'STAEformer': (9, 2023), 'MGSFformer': (10, 2025), 'TimeXer': (11, 2024),
-    'PM25_GNN': (12, 2020), 'PM25_GNN_nosub': (13, 2020),
-    'GC_LSTM': (14, 2020), 'nodesFC_GRU': (15, 2020),
-    'AirDDE': (16, 2026), 'AirPhyNet': (17, 2024), 'AirDualODE': (18, 2025),
-    'AirFormer': (19, 2023),
-    'AirLapse': (20, 2026),
+    'PM25_GNN': (12, 2020),
+    'PM25_GNN_nosub': (None, 2020), 'GC_LSTM': (None, 2020), 'nodesFC_GRU': (None, 2020),
+    'AirDDE': (13, 2026), 'AirPhyNet': (14, 2024), 'AirDualODE': (15, 2025),
+    'AirFormer': (16, 2023),
+    'AirLapse': (17, 2026),
 }
 
 
 def _catalog_label(exp_model_name):
-    """'AirLapse' -> '20. AirLapse 2026' (falls back to the plain name if
-    exp_model_name isn't in MODEL_CATALOG, e.g. right after adding a new
-    model here before its catalog entry is added)."""
+    """'AirLapse' -> '17. AirLapse 2026'; an unnumbered entry (order None,
+    e.g. 'GC_LSTM') -> 'GC_LSTM 2020' (no leading 'N. '). Falls back to the
+    plain name if exp_model_name isn't in MODEL_CATALOG at all, e.g. right
+    after adding a new model here before its catalog entry is added."""
     entry = MODEL_CATALOG.get(exp_model_name)
     if entry is None:
         return exp_model_name
     order, year = entry
+    if order is None:
+        return '%s %d' % (exp_model_name, year)
     return '%d. %s %d' % (order, exp_model_name, year)
 
 

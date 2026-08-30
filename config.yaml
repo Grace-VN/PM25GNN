@@ -16,6 +16,9 @@ experiments:
 # specific models, then AirLapse (this repo's proposed model). To switch,
 # set `model:` above to the plain name (e.g. `model: AirLapse`) - the
 # numbering/year here is reference only, not a literal config value.
+# PM25_GNN_nosub/GC_LSTM/nodesFC_GRU are deliberately left unnumbered
+# (PM25_GNN ablation/baseline-suite siblings, not separately ranked) -
+# numbering below runs 1-17 across the rest.
 #   1. MLP 1986
 #   2. LSTM 1997
 #   3. GRU 2014
@@ -28,14 +31,14 @@ experiments:
 #  10. MGSFformer 2025
 #  11. TimeXer 2024
 #  12. PM25_GNN 2020
-#  13. PM25_GNN_nosub 2020
-#  14. GC_LSTM 2020
-#  15. nodesFC_GRU 2020
-#  16. AirDDE 2026
-#  17. AirPhyNet 2024
-#  18. AirDualODE 2025
-#  19. AirFormer 2023
-#  20. AirLapse 2026
+#      PM25_GNN_nosub 2020
+#      GC_LSTM 2020
+#      nodesFC_GRU 2020
+#  13. AirDDE 2026
+#  14. AirPhyNet 2024
+#  15. AirDualODE 2025
+#  16. AirFormer 2023
+#  17. AirLapse 2026
 
 train:
   batch_size: 32
