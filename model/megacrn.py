@@ -59,8 +59,8 @@ use): forward() exposes `self.last_memory_loss`, a triplet-margin
 "separate" loss plus an MSE "compact" loss over the memory attention's
 top-2 matches (`query`/`pos`/`neg` below) - identical formula and default
 weights (lamb=lamb1=0.01) to the reference repo's traintest_MegaCRN.py.
-train.py/sweep_all_models.py's training loops add a third opt-in hook for
-this alongside the existing KL/alignment ones.
+train.py's training loop adds a third opt-in hook for this alongside the
+existing KL/alignment ones.
 
 Contract (matches every other model in model/, see train.py get_model()):
     MegaCRNPM25(hist_len, pred_len, in_dim, city_num, batch_size, device, ...)

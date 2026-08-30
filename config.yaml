@@ -11,33 +11,31 @@ experiments:
   save_npy: True
   dataset_num: 3
   model: Informer
-# model: MLP
-#  model: LSTM
-#  model: GRU
-#  model: GC_LSTM
-#  model: nodesFC_GRU
-#  model: PM25_GNN
-#  model: PM25_GNN_nosub
-#  model: AirFormer2023
-#  model: Informer
-#  model: Autoformer
-#  model: PatchTST
-#  model: STAEformer2023
-#  model: AirDDE2026
-#  model: AirPhyNet2024
-#  model: AirDualODE2025
-#  model: AirLapse
-#  model: AirLapse2
-#  model: AirLapse3
-#  model: AirLapse4
-#  model: AirLapse5
-#  model: AirLapse6
-#  model: AirLapse7
-#  model: AirLapse8
-#  model: MGSFformer
-#  model: TimeXer
-#  model: AGCRN
-#  model: MegaCRN
+# Available models below, grouped: generic neural network/graph
+# architectures, generic transformers, air-quality-forecasting-domain-
+# specific models, then AirLapse (this repo's proposed model). To switch,
+# set `model:` above to the plain name (e.g. `model: AirLapse`) - the
+# numbering/year here is reference only, not a literal config value.
+#   1. MLP 1986
+#   2. LSTM 1997
+#   3. GRU 2014
+#   4. AGCRN 2020
+#   5. MegaCRN 2023
+#   6. Informer 2021
+#   7. Autoformer 2021
+#   8. PatchTST 2023
+#   9. STAEformer 2023
+#  10. MGSFformer 2025
+#  11. TimeXer 2024
+#  12. PM25_GNN 2020
+#  13. PM25_GNN_nosub 2020
+#  14. GC_LSTM 2020
+#  15. nodesFC_GRU 2020
+#  16. AirDDE 2026
+#  17. AirPhyNet 2024
+#  18. AirDualODE 2025
+#  19. AirFormer 2023
+#  20. AirLapse 2026
 
 train:
   batch_size: 32

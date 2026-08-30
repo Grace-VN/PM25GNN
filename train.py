@@ -22,13 +22,6 @@ from model.airdde import AirDDEPM25
 from model.airphynet import AirPhyNetPM25
 from model.airdualode import AirDualODEPM25
 from model.airlapse import AirLapse
-from model.airlapse2 import AirLapse2
-from model.airlapse3 import AirLapse3
-from model.airlapse4 import AirLapse4
-from model.airlapse5 import AirLapse5
-from model.airlapse6 import AirLapse6
-from model.airlapse7 import AirLapse7
-from model.airlapse8 import AirLapse8
 from model.mgsfformer import MGSFformerPM25
 from model.timexer import TimeXerPM25
 from model.agcrn import AGCRNPM25
@@ -160,34 +153,43 @@ altitude = torch.tensor(
 )  # (N,) — per-node altitude, already extracted by _add_node_attr()
 
 def get_model():
+    # Ordered in three groups - generic neural-network/graph architectures,
+    # generic transformers, then air-quality-forecasting-domain-specific
+    # models - with AirLapse (this repo's proposed model) last.
     if exp_model == 'MLP':
         return MLP(hist_len, pred_len, in_dim)
     elif exp_model == 'LSTM':
         return LSTM(hist_len, pred_len, in_dim, city_num, batch_size, device)
     elif exp_model == 'GRU':
         return GRU(hist_len, pred_len, in_dim, city_num, batch_size, device)
-    elif exp_model == 'nodesFC_GRU':
-        return nodesFC_GRU(hist_len, pred_len, in_dim, city_num, batch_size, device)
-    elif exp_model == 'GC_LSTM':
-        return GC_LSTM(hist_len, pred_len, in_dim, city_num, batch_size, device, graph.edge_index)
-    elif exp_model == 'PM25_GNN':
-        return PM25_GNN(hist_len, pred_len, in_dim, city_num, batch_size, device, graph.edge_index, graph.edge_attr, wind_mean, wind_std)
-    elif exp_model == 'PM25_GNN_nosub':
-        return PM25_GNN_nosub(hist_len, pred_len, in_dim, city_num, batch_size, device, graph.edge_index, graph.edge_attr, wind_mean, wind_std)
-    elif exp_model == 'AirFormer':
-        return AirFormerPM25(
+    elif exp_model == 'AGCRN':
+        # History-only: AGCRN's forward() only ever takes the historical
+        # sequence - see model/agcrn.py's docstring. It also has no fixed
+        # graph at all - node_embeddings and the adjacency they imply are
+        # learned end-to-end from data, in contrast to every physics/
+        # geography-based graph model in this repo (including AirLapse).
+        return AGCRNPM25(
             hist_len, pred_len, in_dim, city_num, batch_size, device,
-            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
-            station_coords=coords,
-            hidden_channels=config['experiments'].get('airformer_hidden_channels', 32),
-            end_channels=config['experiments'].get('airformer_end_channels', 512),
-            blocks=config['experiments'].get('airformer_blocks', 4),
-            num_heads=config['experiments'].get('airformer_num_heads', 2),
-            mlp_expansion=config['experiments'].get('airformer_mlp_expansion', 2),
-            depth=config['experiments'].get('airformer_depth', 1),
-            dropout=config['experiments'].get('airformer_dropout', 0.3),
-            spatial_flag=config['experiments'].get('airformer_spatial_flag', True),
-            stochastic_flag=config['experiments'].get('airformer_stochastic_flag', True),
+            rnn_units=config['experiments'].get('agcrn_rnn_units', 64),
+            num_layers=config['experiments'].get('agcrn_num_layers', 2),
+            cheb_k=config['experiments'].get('agcrn_cheb_k', 2),
+            embed_dim=config['experiments'].get('agcrn_embed_dim', 10),
+        )
+    elif exp_model == 'MegaCRN':
+        # Unlike AGCRN above, this one DOES use future-known weather (as
+        # decoder y_cov) - see model/megacrn.py's docstring. Its graph is
+        # also learned (like AGCRN's) but from a shared memory bank rather
+        # than free per-node embeddings, and is asymmetric (two directional
+        # graphs, not one symmetric adjacency).
+        return MegaCRNPM25(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            rnn_units=config['experiments'].get('megacrn_rnn_units', 64),
+            num_layers=config['experiments'].get('megacrn_num_layers', 1),
+            cheb_k=config['experiments'].get('megacrn_cheb_k', 3),
+            mem_num=config['experiments'].get('megacrn_mem_num', 20),
+            mem_dim=config['experiments'].get('megacrn_mem_dim', 64),
+            memory_lamb=config['experiments'].get('megacrn_memory_lamb', 0.01),
+            memory_lamb1=config['experiments'].get('megacrn_memory_lamb1', 0.01),
         )
     elif exp_model == 'Informer':
         return InformerPM25(
@@ -249,6 +251,43 @@ def get_model():
             activation=config['experiments'].get('staeformer_activation', 'gelu'),
             dt_hours=config['experiments'].get('staeformer_dt_hours', 3.0),
         )
+    elif exp_model == 'MGSFformer':
+        # Target-only baseline: unlike every other model here, MGSFformer's
+        # published architecture doesn't take `feature` (meteorological
+        # covariates) at all - see model/mgsfformer.py's docstring for why
+        # that's a deliberate choice, not an oversight.
+        return MGSFformerPM25(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            ie_dim=config['experiments'].get('mgsfformer_ie_dim', 8),
+            dropout=config['experiments'].get('mgsfformer_dropout', 0.1),
+            num_head=config['experiments'].get('mgsfformer_num_head', 4),
+        )
+    elif exp_model == 'TimeXer':
+        # History-only baseline like MGSFformer above: TimeXer's published
+        # architecture is encoder-only, with no decoder input point for
+        # feature's FUTURE portion - see model/timexer.py's docstring.
+        # It does use feature's historical portion as exogenous covariates
+        # though, unlike MGSFformer's target-only design.
+        return TimeXerPM25(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            patch_len=config['experiments'].get('timexer_patch_len', 8),
+            d_model=config['experiments'].get('timexer_d_model', 128),
+            n_heads=config['experiments'].get('timexer_n_heads', 8),
+            e_layers=config['experiments'].get('timexer_e_layers', 2),
+            d_ff=config['experiments'].get('timexer_d_ff', 256),
+            dropout=config['experiments'].get('timexer_dropout', 0.1),
+            factor=config['experiments'].get('timexer_factor', 5),
+            activation=config['experiments'].get('timexer_activation', 'gelu'),
+            use_norm=config['experiments'].get('timexer_use_norm', True),
+        )
+    elif exp_model == 'PM25_GNN':
+        return PM25_GNN(hist_len, pred_len, in_dim, city_num, batch_size, device, graph.edge_index, graph.edge_attr, wind_mean, wind_std)
+    elif exp_model == 'PM25_GNN_nosub':
+        return PM25_GNN_nosub(hist_len, pred_len, in_dim, city_num, batch_size, device, graph.edge_index, graph.edge_attr, wind_mean, wind_std)
+    elif exp_model == 'GC_LSTM':
+        return GC_LSTM(hist_len, pred_len, in_dim, city_num, batch_size, device, graph.edge_index)
+    elif exp_model == 'nodesFC_GRU':
+        return nodesFC_GRU(hist_len, pred_len, in_dim, city_num, batch_size, device)
     elif exp_model == 'AirDDE':
         return AirDDEPM25(
             hist_len, pred_len, in_dim, city_num, batch_size, device,
@@ -306,6 +345,21 @@ def get_model():
             ode_atol=config['experiments'].get('airdualode_ode_atol', 1e-4),
             ode_adjoint=config['experiments'].get('airdualode_ode_adjoint', True),
         )
+    elif exp_model == 'AirFormer':
+        return AirFormerPM25(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
+            station_coords=coords,
+            hidden_channels=config['experiments'].get('airformer_hidden_channels', 32),
+            end_channels=config['experiments'].get('airformer_end_channels', 512),
+            blocks=config['experiments'].get('airformer_blocks', 4),
+            num_heads=config['experiments'].get('airformer_num_heads', 2),
+            mlp_expansion=config['experiments'].get('airformer_mlp_expansion', 2),
+            depth=config['experiments'].get('airformer_depth', 1),
+            dropout=config['experiments'].get('airformer_dropout', 0.3),
+            spatial_flag=config['experiments'].get('airformer_spatial_flag', True),
+            stochastic_flag=config['experiments'].get('airformer_stochastic_flag', True),
+        )
     elif exp_model == 'AirLapse':
         return AirLapse(
             hist_len, pred_len, in_dim, city_num, batch_size, device,
@@ -327,271 +381,8 @@ def get_model():
             sigma_h=config['experiments'].get('gru_sigma_h', 1200.0),
             sigma_tau_init_h=config['experiments'].get('gru_sigma_tau_init_h', 3.0),
             dt_hours=config['experiments'].get('gru_dt_hours', 3.0),
-        )
-    elif exp_model == 'AirLapse2':
-        # AirLapse with a trend-augmented key/value in its spatial attention
-        # (model/airlapse2.py) - identical elsewhere, so it reuses AirLapse's
-        # gru_* config keys under a gru2_* prefix (independently tunable, same
-        # defaults) rather than inventing a parallel set of names.
-        return AirLapse2(
-            hist_len, pred_len, in_dim, city_num, batch_size, device,
-            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
-            station_coords=coords,
-            station_elevation=altitude,
-            feature_mean=train_data.feature_mean,
-            feature_std=train_data.feature_std,
-            hidden_dim=config['experiments'].get('gru2_hidden_dim', 64),
-            latent_dim=config['experiments'].get('gru2_latent_dim', 16),
-            attn_dim=config['experiments'].get('gru2_attn_dim', 32),
-            num_layers=config['experiments'].get('gru2_num_layers', 1),
-            dropout=config['experiments'].get('gru2_dropout', 0.1),
-            logvar_clamp=config['experiments'].get('gru2_logvar_clamp', 10.0),
-            spatial_mix_mode=config['experiments'].get('gru2_spatial_mix_mode', 'bottleneck'),
-            max_lag=config['experiments'].get('gru2_max_lag', 6),
-            dist_threshold_km=config['experiments'].get('gru2_dist_threshold_km', 300.0),
-            sigma_d=config['experiments'].get('gru2_sigma_d', 200.0),
-            sigma_h=config['experiments'].get('gru2_sigma_h', 1200.0),
-            sigma_tau_init_h=config['experiments'].get('gru2_sigma_tau_init_h', 3.0),
-            dt_hours=config['experiments'].get('gru2_dt_hours', 3.0),
-        )
-    elif exp_model == 'AirLapse3':
-        # AirLapse with an explicit, non-learned "transported pollution
-        # from neighbors" estimate added alongside its spatial attention
-        # (model/airlapse3.py) - identical elsewhere, so it reuses
-        # AirLapse's gru_* config keys under a gru3_* prefix (independently
-        # tunable, same defaults) rather than inventing a parallel set of
-        # names.
-        return AirLapse3(
-            hist_len, pred_len, in_dim, city_num, batch_size, device,
-            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
-            station_coords=coords,
-            station_elevation=altitude,
-            feature_mean=train_data.feature_mean,
-            feature_std=train_data.feature_std,
-            hidden_dim=config['experiments'].get('gru3_hidden_dim', 64),
-            latent_dim=config['experiments'].get('gru3_latent_dim', 16),
-            attn_dim=config['experiments'].get('gru3_attn_dim', 32),
-            num_layers=config['experiments'].get('gru3_num_layers', 1),
-            dropout=config['experiments'].get('gru3_dropout', 0.1),
-            logvar_clamp=config['experiments'].get('gru3_logvar_clamp', 10.0),
-            spatial_mix_mode=config['experiments'].get('gru3_spatial_mix_mode', 'bottleneck'),
-            max_lag=config['experiments'].get('gru3_max_lag', 6),
-            dist_threshold_km=config['experiments'].get('gru3_dist_threshold_km', 300.0),
-            sigma_d=config['experiments'].get('gru3_sigma_d', 200.0),
-            sigma_h=config['experiments'].get('gru3_sigma_h', 1200.0),
-            sigma_tau_init_h=config['experiments'].get('gru3_sigma_tau_init_h', 3.0),
-            dt_hours=config['experiments'].get('gru3_dt_hours', 3.0),
-        )
-    elif exp_model == 'AirLapse4':
-        # AirLapse3 with its explicit transport estimate upgraded to the 1D
-        # advection-diffusion Green's function (model/airlapse4.py) -
-        # identical elsewhere, so it reuses AirLapse3's gru_* config keys
-        # under a gru4_* prefix (independently tunable, same defaults)
-        # plus the two new diffusion hyperparameters.
-        return AirLapse4(
-            hist_len, pred_len, in_dim, city_num, batch_size, device,
-            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
-            station_coords=coords,
-            station_elevation=altitude,
-            feature_mean=train_data.feature_mean,
-            feature_std=train_data.feature_std,
-            hidden_dim=config['experiments'].get('gru4_hidden_dim', 64),
-            latent_dim=config['experiments'].get('gru4_latent_dim', 16),
-            attn_dim=config['experiments'].get('gru4_attn_dim', 32),
-            num_layers=config['experiments'].get('gru4_num_layers', 1),
-            dropout=config['experiments'].get('gru4_dropout', 0.1),
-            logvar_clamp=config['experiments'].get('gru4_logvar_clamp', 10.0),
-            spatial_mix_mode=config['experiments'].get('gru4_spatial_mix_mode', 'bottleneck'),
-            max_lag=config['experiments'].get('gru4_max_lag', 6),
-            dist_threshold_km=config['experiments'].get('gru4_dist_threshold_km', 300.0),
-            sigma_d=config['experiments'].get('gru4_sigma_d', 200.0),
-            sigma_h=config['experiments'].get('gru4_sigma_h', 1200.0),
-            sigma_tau_init_h=config['experiments'].get('gru4_sigma_tau_init_h', 3.0),
-            dt_hours=config['experiments'].get('gru4_dt_hours', 3.0),
-            diffusivity_km2_per_hour_init=config['experiments'].get('gru4_diffusivity_km2_per_hour_init', 50.0),
-            t_eps_hours=config['experiments'].get('gru4_t_eps_hours', 0.25),
-        )
-    elif exp_model == 'AirLapse6':
-        # AirLapse4 with its transport estimate upgraded to a full 2D
-        # downwind/crosswind advection-diffusion decomposition, instead of
-        # AirLapse4's 1D projection onto the fixed source-receiver line
-        # (model/airlapse6.py). The learned attention (including lag_bias)
-        # is unchanged from AirLapse4. Reuses AirLapse4's gru_* config keys
-        # under a gru6_* prefix, with one isotropic diffusivity replaced by
-        # two (downwind/crosswind).
-        return AirLapse6(
-            hist_len, pred_len, in_dim, city_num, batch_size, device,
-            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
-            station_coords=coords,
-            station_elevation=altitude,
-            feature_mean=train_data.feature_mean,
-            feature_std=train_data.feature_std,
-            hidden_dim=config['experiments'].get('gru6_hidden_dim', 64),
-            latent_dim=config['experiments'].get('gru6_latent_dim', 16),
-            attn_dim=config['experiments'].get('gru6_attn_dim', 32),
-            num_layers=config['experiments'].get('gru6_num_layers', 1),
-            dropout=config['experiments'].get('gru6_dropout', 0.1),
-            logvar_clamp=config['experiments'].get('gru6_logvar_clamp', 10.0),
-            spatial_mix_mode=config['experiments'].get('gru6_spatial_mix_mode', 'bottleneck'),
-            max_lag=config['experiments'].get('gru6_max_lag', 6),
-            dist_threshold_km=config['experiments'].get('gru6_dist_threshold_km', 300.0),
-            sigma_d=config['experiments'].get('gru6_sigma_d', 200.0),
-            sigma_h=config['experiments'].get('gru6_sigma_h', 1200.0),
-            sigma_tau_init_h=config['experiments'].get('gru6_sigma_tau_init_h', 3.0),
-            dt_hours=config['experiments'].get('gru6_dt_hours', 3.0),
-            diffusivity_downwind_km2_per_hour_init=config['experiments'].get(
-                'gru6_diffusivity_downwind_km2_per_hour_init', 50.0),
-            diffusivity_crosswind_km2_per_hour_init=config['experiments'].get(
-                'gru6_diffusivity_crosswind_km2_per_hour_init', 50.0),
-            t_eps_hours=config['experiments'].get('gru6_t_eps_hours', 0.25),
-        )
-    elif exp_model == 'AirLapse7':
-        # AirLapse4 with the explicit transport estimate's cross-neighbor
-        # aggregation replaced by a second softmax stage instead of an
-        # additive sum - an ablation testing whether a competing-budget
-        # aggregation across sources beats the physically-motivated
-        # additive one (model/airlapse7.py). Reuses AirLapse4's gru_*
-        # config keys under a gru7_* prefix.
-        return AirLapse7(
-            hist_len, pred_len, in_dim, city_num, batch_size, device,
-            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
-            station_coords=coords,
-            station_elevation=altitude,
-            feature_mean=train_data.feature_mean,
-            feature_std=train_data.feature_std,
-            hidden_dim=config['experiments'].get('gru7_hidden_dim', 64),
-            latent_dim=config['experiments'].get('gru7_latent_dim', 16),
-            attn_dim=config['experiments'].get('gru7_attn_dim', 32),
-            num_layers=config['experiments'].get('gru7_num_layers', 1),
-            dropout=config['experiments'].get('gru7_dropout', 0.1),
-            logvar_clamp=config['experiments'].get('gru7_logvar_clamp', 10.0),
-            spatial_mix_mode=config['experiments'].get('gru7_spatial_mix_mode', 'bottleneck'),
-            max_lag=config['experiments'].get('gru7_max_lag', 6),
-            dist_threshold_km=config['experiments'].get('gru7_dist_threshold_km', 300.0),
-            sigma_d=config['experiments'].get('gru7_sigma_d', 200.0),
-            sigma_h=config['experiments'].get('gru7_sigma_h', 1200.0),
-            sigma_tau_init_h=config['experiments'].get('gru7_sigma_tau_init_h', 3.0),
-            dt_hours=config['experiments'].get('gru7_dt_hours', 3.0),
-            diffusivity_km2_per_hour_init=config['experiments'].get('gru7_diffusivity_km2_per_hour_init', 50.0),
-            t_eps_hours=config['experiments'].get('gru7_t_eps_hours', 0.25),
-        )
-    elif exp_model == 'AirLapse8':
-        # AirLapse7 with stage 2's intersource softmax score changed from
-        # pure physical plausibility to a learnable blend of physical
-        # plausibility and the learned attention's own per-source
-        # relevance, via one new scalar (w_context_couple, starts at 0 -
-        # AirLapse8 == AirLapse7 before training) - model/airlapse8.py.
-        # Reuses AirLapse7's gru_* config keys under a gru8_* prefix.
-        return AirLapse8(
-            hist_len, pred_len, in_dim, city_num, batch_size, device,
-            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
-            station_coords=coords,
-            station_elevation=altitude,
-            feature_mean=train_data.feature_mean,
-            feature_std=train_data.feature_std,
-            hidden_dim=config['experiments'].get('gru8_hidden_dim', 64),
-            latent_dim=config['experiments'].get('gru8_latent_dim', 16),
-            attn_dim=config['experiments'].get('gru8_attn_dim', 32),
-            num_layers=config['experiments'].get('gru8_num_layers', 1),
-            dropout=config['experiments'].get('gru8_dropout', 0.1),
-            logvar_clamp=config['experiments'].get('gru8_logvar_clamp', 10.0),
-            spatial_mix_mode=config['experiments'].get('gru8_spatial_mix_mode', 'bottleneck'),
-            max_lag=config['experiments'].get('gru8_max_lag', 6),
-            dist_threshold_km=config['experiments'].get('gru8_dist_threshold_km', 300.0),
-            sigma_d=config['experiments'].get('gru8_sigma_d', 200.0),
-            sigma_h=config['experiments'].get('gru8_sigma_h', 1200.0),
-            sigma_tau_init_h=config['experiments'].get('gru8_sigma_tau_init_h', 3.0),
-            dt_hours=config['experiments'].get('gru8_dt_hours', 3.0),
-            diffusivity_km2_per_hour_init=config['experiments'].get('gru8_diffusivity_km2_per_hour_init', 50.0),
-            t_eps_hours=config['experiments'].get('gru8_t_eps_hours', 0.25),
-        )
-    elif exp_model == 'AirLapse5':
-        # AirLapse4 with the learned attention's lag_bias score term (and
-        # its w_lag/sigma_tau/speed_floor_kmh apparatus) removed, since the
-        # diffusion-based transport estimate already covers "how much and
-        # when" more accurately (model/airlapse5.py). Reuses AirLapse4's
-        # gru_* config keys under a gru5_* prefix - no sigma_tau_init_h
-        # here, that knob no longer exists.
-        return AirLapse5(
-            hist_len, pred_len, in_dim, city_num, batch_size, device,
-            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
-            station_coords=coords,
-            station_elevation=altitude,
-            feature_mean=train_data.feature_mean,
-            feature_std=train_data.feature_std,
-            hidden_dim=config['experiments'].get('gru5_hidden_dim', 64),
-            latent_dim=config['experiments'].get('gru5_latent_dim', 16),
-            attn_dim=config['experiments'].get('gru5_attn_dim', 32),
-            num_layers=config['experiments'].get('gru5_num_layers', 1),
-            dropout=config['experiments'].get('gru5_dropout', 0.1),
-            logvar_clamp=config['experiments'].get('gru5_logvar_clamp', 10.0),
-            spatial_mix_mode=config['experiments'].get('gru5_spatial_mix_mode', 'bottleneck'),
-            max_lag=config['experiments'].get('gru5_max_lag', 6),
-            dist_threshold_km=config['experiments'].get('gru5_dist_threshold_km', 300.0),
-            sigma_d=config['experiments'].get('gru5_sigma_d', 200.0),
-            sigma_h=config['experiments'].get('gru5_sigma_h', 1200.0),
-            dt_hours=config['experiments'].get('gru5_dt_hours', 3.0),
-            diffusivity_km2_per_hour_init=config['experiments'].get('gru5_diffusivity_km2_per_hour_init', 50.0),
-            t_eps_hours=config['experiments'].get('gru5_t_eps_hours', 0.25),
-        )
-    elif exp_model == 'MGSFformer':
-        # Target-only baseline: unlike every other model here, MGSFformer's
-        # published architecture doesn't take `feature` (meteorological
-        # covariates) at all - see model/mgsfformer.py's docstring for why
-        # that's a deliberate choice, not an oversight.
-        return MGSFformerPM25(
-            hist_len, pred_len, in_dim, city_num, batch_size, device,
-            ie_dim=config['experiments'].get('mgsfformer_ie_dim', 8),
-            dropout=config['experiments'].get('mgsfformer_dropout', 0.1),
-            num_head=config['experiments'].get('mgsfformer_num_head', 4),
-        )
-    elif exp_model == 'TimeXer':
-        # History-only baseline like MGSFformer above: TimeXer's published
-        # architecture is encoder-only, with no decoder input point for
-        # feature's FUTURE portion - see model/timexer.py's docstring.
-        # It does use feature's historical portion as exogenous covariates
-        # though, unlike MGSFformer's target-only design.
-        return TimeXerPM25(
-            hist_len, pred_len, in_dim, city_num, batch_size, device,
-            patch_len=config['experiments'].get('timexer_patch_len', 8),
-            d_model=config['experiments'].get('timexer_d_model', 128),
-            n_heads=config['experiments'].get('timexer_n_heads', 8),
-            e_layers=config['experiments'].get('timexer_e_layers', 2),
-            d_ff=config['experiments'].get('timexer_d_ff', 256),
-            dropout=config['experiments'].get('timexer_dropout', 0.1),
-            factor=config['experiments'].get('timexer_factor', 5),
-            activation=config['experiments'].get('timexer_activation', 'gelu'),
-            use_norm=config['experiments'].get('timexer_use_norm', True),
-        )
-    elif exp_model == 'AGCRN':
-        # History-only baseline like the three above: AGCRN's forward()
-        # only ever takes the historical sequence - see model/agcrn.py's
-        # docstring. Unlike the other three, it also has no fixed graph at
-        # all - node_embeddings and the adjacency they imply are learned
-        # end-to-end from data, in contrast to every physics/geography-
-        # based graph model in this repo (including AirLapse itself).
-        return AGCRNPM25(
-            hist_len, pred_len, in_dim, city_num, batch_size, device,
-            rnn_units=config['experiments'].get('agcrn_rnn_units', 64),
-            num_layers=config['experiments'].get('agcrn_num_layers', 2),
-            cheb_k=config['experiments'].get('agcrn_cheb_k', 2),
-            embed_dim=config['experiments'].get('agcrn_embed_dim', 10),
-        )
-    elif exp_model == 'MegaCRN':
-        # Unlike MGSFformer/TimeXer/AGCRN above, this one DOES use future-
-        # known weather (as decoder y_cov) - see model/megacrn.py's
-        # docstring. Its graph is also learned (like AGCRN's) but from a
-        # shared memory bank rather than free per-node embeddings, and is
-        # asymmetric (two directional graphs, not one symmetric adjacency).
-        return MegaCRNPM25(
-            hist_len, pred_len, in_dim, city_num, batch_size, device,
-            rnn_units=config['experiments'].get('megacrn_rnn_units', 64),
-            num_layers=config['experiments'].get('megacrn_num_layers', 1),
-            cheb_k=config['experiments'].get('megacrn_cheb_k', 3),
-            mem_num=config['experiments'].get('megacrn_mem_num', 20),
-            mem_dim=config['experiments'].get('megacrn_mem_dim', 64),
-            memory_lamb=config['experiments'].get('megacrn_memory_lamb', 0.01),
-            memory_lamb1=config['experiments'].get('megacrn_memory_lamb1', 0.01),
+            diffusivity_km2_per_hour_init=config['experiments'].get('gru_diffusivity_km2_per_hour_init', 50.0),
+            t_eps_hours=config['experiments'].get('gru_t_eps_hours', 0.25),
         )
     else:
         raise Exception('Wrong model name!')

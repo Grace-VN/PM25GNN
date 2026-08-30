@@ -34,61 +34,98 @@ def _inv_softplus(y):
 
 class MultiLagPhysicsAwareSpatialAttention(nn.Module):
     """
-    probgru4's PhysicsAwareSpatialAttention (content attention + three
-    independently-weighted, interpretable physics biases: distance decay,
-    wind alignment, terrain barrier), extended with exactly ONE new idea,
-    added the same way the existing three are: a wind-implied TRANSPORT-
-    TIME match, "does this lag look like the right lag for this pair".
+    Spatial mixing step for AirLapse, combining two complementary signals
+    per receiving station: a LEARNED content+physics attention over
+    neighboring stations' recent hidden states (`context`), and an
+    EXPLICIT, non-learned physical estimate of incoming pollution mass
+    (`transported`), computed directly from the advection-diffusion
+    equation. The two are independent - `transported` never feeds into or
+    is fed by `context`'s attention weights - and are combined only
+    afterward, by the caller's mix_gate.
 
-    Everything else that made v4 the best-performing model in this
-    project's lineage is left alone on purpose: no anisotropic downwind/
-    crosswind kernel, no adaptive graph embeddings, no neural correction
-    gate, no second parallel branch. Those were each tried (v5/v6/v7) on
-    top of v4's design and none clearly beat it on this ~680-sample
-    dataset - so rather than trying yet another combination of that
-    machinery, this isolates the ONE piece of the proposal v4 structurally
-    couldn't express at all: v4 only ever looks at the LAST observed
-    history step's wind, discarding how far back a plausible transport
-    event actually happened.
+    LEARNED CONTENT+PHYSICS ATTENTION (`context`): a standard Q/K/V
+    attention over each receiver's own current state and its neighbors'
+    hidden states at the last `K` lags, with four independently-weighted,
+    interpretable physics bonuses added to the attention score before the
+    softmax - distance decay, wind alignment, terrain barrier, and a
+    Gaussian arrival-time kernel built from each source's own historical
+    wind (tau_ij = d_ij / wind_speed, scored against how many hours ago
+    that lag was). Each bonus has its own learnable scalar weight
+    (w_dist/w_wind/w_terrain/w_lag) that can shrink toward 0 if it isn't
+    earning its keep - inspect all four after training to see which
+    physical factors actually mattered to the learned attention.
 
-    KEYS/VALUES NOW SPAN RECENT LAGS, NOT JUST "NOW":
-    v4's bottleneck mode calls `nn.GRU` and keeps only h_n (the final
-    step's hidden state) - `output` (every intermediate step's hidden
-    state) was already being computed and discarded. This class reuses
-    exactly that free byproduct: the query is still the current/last
-    step's hidden state (h_last - "what does receiver j need right now"),
-    but keys/values are drawn from the last `K` steps' hidden states
-    (h_lag - "what did every station look like at each recent lag"),
-    each lag scored with its OWN wind reading. K=1 degenerates exactly to
-    v4's original single-step attention plus one extra bias term.
+    EXPLICIT PHYSICAL TRANSPORT ESTIMATE (`transported`): a direct
+    computation of how much pollution mass is, physically, in the process
+    of arriving at each receiver from its neighbors - independent of any
+    learned attention weight, with only one learnable parameter (the eddy
+    diffusivity D). It exists because a learned attention weight is not
+    the same thing as an interpretable, checkable physical quantity: this
+    term can be validated on its own terms (its peak sits at the correct
+    advective travel time, it decays correctly with distance and
+    misalignment, it degrades gracefully under calm or reversed wind)
+    independent of whatever the rest of the network has learned.
 
-    NEW BIAS - K_time, using the source's OWN historical wind:
-        tau_ij(t-k) = d_ij / wind_speed_i(t-k)             (implied travel time)
-        lag_bias_ij(k) = exp[-(k*dt_hours - tau_ij(t-k))^2 / (2*sigma_tau^2)]
-    scored with its own learnable weight `w_lag`, same "can shrink to ~0
-    if it isn't earning its keep" philosophy as w_dist/w_wind/w_terrain -
-    inspect all four after training to see which physical factors actually
-    mattered. k=0 (the current/last step) is included in the lag set, so
-    this subsumes rather than replaces what v4's single-step case already
-    did there.
+    Formulation. For source j, receiver i, lag k (elapsed time
+    t_k = k * dt_hours, floored at t_eps_hours to keep the k=0 "now" lag
+    well-defined):
+        v_ijk = wind_speed_j(t-k) * cos(theta_ijk)
+                (SIGNED radial wind speed from j toward i, where theta_ijk
+                is the angle between source j's wind bearing and the
+                straight-line bearing from j to i. Signed, not clamped:
+                wind blowing away from the receiver gives a negative v,
+                which the Green's function below suppresses naturally.)
+        G_ijk = 1/sqrt(4*pi*D*t_k) * exp[-(d_ij - v_ijk*t_k)^2 / (4*D*t_k)]
+                (the fundamental point-source solution of the 1D
+                advection-diffusion equation dC/dt = D*d2C/dx2 - v*dC/dx:
+                the concentration this predicts at distance d_ij after
+                elapsed time t_k, given constant radial advection v_ijk
+                and eddy diffusivity D along the source-receiver line.)
+    This one kernel answers "how much, and when": its peak over t sits at
+    t* = d_ij / v_ijk, the advective travel time, and its spread grows as
+    sqrt(D*t) - turbulent dispersion widens the plume the longer/farther
+    it has travelled, so a fast, close, well-aligned source arrives sooner
+    and MORE concentrated than a slow, far, or misaligned one, not just
+    later. Backward wind (v_ijk < 0) is handled for free - the mismatch
+    term only grows with t_k in that case, so G_ijk decays monotonically
+    with no plausible future arrival peak. Calm wind (v_ijk = 0) degrades
+    gracefully to pure diffusion.
+        w_ijk    = neighbor_mask_ij * (i != j) * G_ijk
+        pi_ijk   = w_ijk / (sum_k w_ijk + eps)
+        transport_j->i = sum_k pi_ijk * pm25_j(t-k)
+        reach_ij = max_k w_ijk
+        transported_i = sum_j reach_ij * transport_j->i
+    The aggregation across sources j is ADDITIVE, not a normalized
+    (softmax-style) share of a fixed budget - this is a deliberate
+    physical choice, not an oversight: advection-diffusion is a LINEAR
+    PDE, and linear PDEs obey superposition, so the true concentration at
+    a receiver from several simultaneous sources is the literal sum of
+    each source's individual contribution. Several simultaneously
+    plausible upwind neighbors should, and here do, contribute more
+    incoming pollution than just one. The i == j (self) term is excluded
+    throughout: a station's own current/recent PM2.5 is already part of
+    the model's input elsewhere (via its own encoded hidden state), so
+    this quantity stays purely about inflow from OTHER stations.
 
-    TWO FIXES CARRIED OVER FROM v5-v7 (not optional here - the new K_time
-    term needs real km/h and a real compass bearing to mean anything, and
-    leaving wind_align on the old broken computation right next to a
-    correct one would be strictly worse, not more faithful to v4):
-      - wind speed/direction are recovered by de-normalizing the dataset's
-        own precomputed speed(km/h)/direction(deg) tail channels via
-        feature_mean/feature_std (exact z-score inversion), not by
-        computing atan2/sqrt on still-standardized u/v components.
-      - wind direction is converted to a compass-bearing "travel toward"
-        angle, matching `bearing_deg`'s clockwise-from-north convention
-        instead of the mismatched mathematical convention v1-v4 used.
-      Both are used for wind_align too now, since it shares the same wind
-      pipeline as the new lag_bias term.
+    D (diffusivity, km^2/hour) is softplus-parameterized and initialized
+    to a middling value (see __init__) - the optimizer is free to shrink
+    or grow it, and inspecting it after training tells you how much
+    horizontal spread the data actually supports.
+
+    t_eps_hours: G_ijk's t_k=0 case represents "no time has passed",
+    which is the correct answer for the current/last lag toward any OTHER
+    station (nothing has had time to arrive), but is undefined (division
+    by t_k=0) as written. Flooring t_k at a small positive t_eps_hours
+    makes this well-defined and, since d_ij > 0 for any j != i, correctly
+    collapses G_ijk to ~0 there (the exponential's distance penalty at
+    very small t completely dominates the 1/sqrt(t) prefactor's blowup)
+    rather than raising a NaN - a numerical convenience for a case whose
+    correct physical answer (0) was never in question.
     """
     def __init__(self, hidden_dim, station_coords, station_elevation,
                  attn_dim=32, dist_threshold_km=300.0, sigma_d=200.0,
-                 sigma_h=1200.0, sigma_tau_init_h=3.0, speed_floor_kmh=0.5):
+                 sigma_h=1200.0, sigma_tau_init_h=3.0, speed_floor_kmh=0.5,
+                 diffusivity_km2_per_hour_init=50.0, t_eps_hours=0.25):
         super().__init__()
 
         self.q_proj = nn.Linear(hidden_dim, attn_dim, bias=False)
@@ -96,13 +133,19 @@ class MultiLagPhysicsAwareSpatialAttention(nn.Module):
         self.v_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
         self.scale = attn_dim ** -0.5
         self.speed_floor_kmh = speed_floor_kmh
+        self.t_eps_hours = t_eps_hours
 
-        # same "learnable but not softmax-tied" philosophy as v4
+        # learnable but not softmax-tied: each can shrink to ~0 if it
+        # isn't earning its keep, independent of the others.
         self.w_dist = nn.Parameter(torch.tensor(1.0))
         self.w_wind = nn.Parameter(torch.tensor(1.0))
         self.w_terrain = nn.Parameter(torch.tensor(1.0))
         self.w_lag = nn.Parameter(torch.tensor(1.0))
         self.log_sigma_tau = nn.Parameter(torch.tensor(_inv_softplus(sigma_tau_init_h)))
+
+        # the one learnable parameter the explicit transport estimate
+        # adds: eddy diffusivity (km^2/hour) for its Green's function.
+        self.log_D = nn.Parameter(torch.tensor(_inv_softplus(diffusivity_km2_per_hour_init)))
 
         dist = haversine_km(station_coords)                          # [N, N]
         neighbor_mask = dist <= dist_threshold_km
@@ -121,7 +164,15 @@ class MultiLagPhysicsAwareSpatialAttention(nn.Module):
         # layout - see forward()
         self.register_buffer('bearing_j_i', bearing_deg(station_coords).t())
 
-    def forward(self, h_last, h_lag, travel_bearing_lag, wind_speed_kmh_lag, k_hours):
+        # neighbor_mask with the diagonal zeroed, precomputed once - used
+        # only by the explicit transport estimate below (not by the
+        # content+physics attention path above, where a station attending
+        # to its own recent history via neighbor_mask alone is normal/
+        # intended, so that mask is kept separate and untouched).
+        not_self = ~torch.eye(dist.shape[0], dtype=torch.bool)
+        self.register_buffer('transport_mask', neighbor_mask & not_self)
+
+    def forward(self, h_last, h_lag, travel_bearing_lag, wind_speed_kmh_lag, k_hours, pm25_lag):
         """
         h_last              : [B, N, hidden_dim] - current/last-step states (query)
         h_lag                : [B, K, N, hidden_dim] - states at each of the K
@@ -130,7 +181,9 @@ class MultiLagPhysicsAwareSpatialAttention(nn.Module):
                                 bearing (blowing toward) at that lag
         wind_speed_kmh_lag   : [B, K, N] each source's wind speed (km/h) at that lag
         k_hours              : [K] elapsed time k*dt_hours for each lag position
-        returns              : [B, N, hidden_dim]
+        pm25_lag             : [B, K, N] each source's raw/normalized PM2.5 at
+                                that lag, SAME (b, k, source) indexing as h_lag
+        returns              : (context [B, N, hidden_dim], transported [B, N])
         """
         B, N, _ = h_last.shape
         K = h_lag.shape[1]
@@ -142,7 +195,10 @@ class MultiLagPhysicsAwareSpatialAttention(nn.Module):
 
         # theta: angle between SOURCE i's wind (at lag k) and bearing i->j
         angle_diff = travel_bearing_lag.unsqueeze(2) - self.bearing_j_i.view(1, 1, N, N)  # [B,K,N_j,N_i]
-        wind_align = torch.clamp(torch.cos(angle_diff), min=0.0)
+        cos_theta = torch.cos(angle_diff)                                 # SIGNED - shared by wind_align below
+        # and the transport estimate's v_radial further down (that one
+        # needs the sign kept; this clamp is only for the score bonus).
+        wind_align = torch.clamp(cos_theta, min=0.0)
 
         speed = wind_speed_kmh_lag.clamp(min=0.0)
         tau = self.dist_km.view(1, 1, N, N) / (speed.unsqueeze(2) + self.speed_floor_kmh)  # [B,K,N_j,N_i]
@@ -169,41 +225,52 @@ class MultiLagPhysicsAwareSpatialAttention(nn.Module):
 
         score = score.masked_fill(~mask_tiled.unsqueeze(0), float('-inf'))
         weights = torch.nan_to_num(torch.softmax(score, dim=-1), nan=0.0)
-        return torch.bmm(weights, v)
+        context = torch.bmm(weights, v)
+
+        # --- explicit physical transport estimate: 1D advection-diffusion
+        # Green's function (see class docstring) - independent of, and not
+        # feeding back into, the learned attention above. ---
+        v_radial = speed.unsqueeze(2) * cos_theta                         # [B,K,N_j,N_i], toward-receiver speed (signed)
+        t_eff = k_hours_b + self.t_eps_hours                              # [1,K,1,1], keeps t=0 well-defined
+        D = F.softplus(self.log_D) + 1e-6
+        d = self.dist_km.view(1, 1, N, N)
+        green = (
+            1.0 / torch.sqrt(4.0 * math.pi * D * t_eff)
+            * torch.exp(-((d - v_radial * t_eff) ** 2) / (4.0 * D * t_eff))
+        )                                                                  # [B, K, N_receiver, N_source]
+
+        w_transport = self.transport_mask.to(green.dtype).view(1, 1, N, N) * green
+
+        pi = w_transport / (w_transport.sum(dim=1, keepdim=True) + 1e-8)  # sums to 1 over k
+        transport_from_source = torch.einsum('bkij,bkj->bij', pi, pm25_lag)  # [B, N_receiver, N_source]
+        reach = w_transport.max(dim=1).values                             # [B, N_receiver, N_source]
+        transported = (reach * transport_from_source).sum(dim=-1)         # [B, N_receiver]
+
+        return context, transported
 
 
 class AirLapse(nn.Module):
     """
-    Named AirLapse for publication (internally this was ProbGRUModel8, the
-    8th iteration of this repo's probgru lineage - see probgru9.py's
-    docstring for what came after, which still refers to this one as v8).
-
-    ProbGRUModel4, unchanged everywhere except its spatial mixing step,
-    which is now MultiLagPhysicsAwareSpatialAttention (see that class's
-    docstring for what changed and, just as importantly, what deliberately
-    did NOT). VAE bottleneck, decoder (no decode-time mixing, per-node-
-    independent rollout), and the bottleneck/per_step fork are all
-    identical to v4's, so this stays directly comparable through the same
-    trainer.
+    A VAE-style, per-station-independent GRU forecaster whose spatial
+    mixing step (MultiLagPhysicsAwareSpatialAttention, above) combines a
+    learned content+physics attention over neighboring stations with an
+    explicit, physically-derived estimate of incoming pollution transport
+    from the advection-diffusion equation - see that class's docstring for
+    the full formulation.
 
     spatial_mix_mode:
       - 'bottleneck': `nn.GRU`'s full per-step output (not just h_n) is
         kept; the last `max_lag` steps become the attention's keys/values
-        in one mixing pass at the end of encoding - v4's bottleneck mode
-        only ever used the single last step here.
-      - 'per_step': the encoder is unrolled with a GRUCell exactly as in
-        v4; at every step, MultiLagPhysicsAwareSpatialAttention is called
-        with K=1 (that step's own state and wind only) - algebraically
-        v4's original per-step attention plus the one new bias term (which
-        the model can learn to ignore via w_lag -> 0), not a second
-        implementation to keep in sync.
+        (and the transport estimate's source lags) in one pass at the end
+        of encoding.
+      - 'per_step': the encoder is unrolled with a GRUCell; at every step,
+        MultiLagPhysicsAwareSpatialAttention is called with K=1 (that
+        step's own state, wind, and PM2.5 only) - the Green's function
+        transport estimate degrades to a single-lag evaluation there, same
+        as any other K=1 case.
 
     `max_lag` (bottleneck mode only) bounds how far back the lag-matching
-    keys/values reach, clamped to hist_len; default 6 covers an 18-hour
-    lookback at this dataset's 3-hour native step and costs roughly
-    max_lag times v4's original single-pass attention - well under v7's
-    ~10x overhead from materializing a full [B, K, N, N] kernel plus a
-    second parallel branch.
+    keys/values (and transport source lags) reach, clamped to hist_len.
     """
     def __init__(self, hist_len, pred_len, in_dim, city_num, batch_size, device,
                  edge_index, edge_attr, wind_mean, wind_std,
@@ -213,7 +280,8 @@ class AirLapse(nn.Module):
                  dropout=0.1, logvar_clamp=10.0,
                  spatial_mix_mode='bottleneck', max_lag=6,
                  dist_threshold_km=300.0, sigma_d=200.0, sigma_h=1200.0,
-                 sigma_tau_init_h=3.0, dt_hours=3.0):
+                 sigma_tau_init_h=3.0, dt_hours=3.0,
+                 diffusivity_km2_per_hour_init=50.0, t_eps_hours=0.25):
         super(AirLapse, self).__init__()
         assert spatial_mix_mode in ('bottleneck', 'per_step'), \
             f"spatial_mix_mode must be 'bottleneck' or 'per_step', got {spatial_mix_mode}"
@@ -275,8 +343,12 @@ class AirLapse(nn.Module):
             sigma_d=sigma_d,
             sigma_h=sigma_h,
             sigma_tau_init_h=sigma_tau_init_h,
+            diffusivity_km2_per_hour_init=diffusivity_km2_per_hour_init,
+            t_eps_hours=t_eps_hours,
         )
-        self.mix_gate = nn.Linear(hidden_dim * 2, hidden_dim)
+        # +1: the explicit scalar transport estimate, concatenated alongside
+        # h_grid and the learned attention context.
+        self.mix_gate = nn.Linear(hidden_dim * 2 + 1, hidden_dim)
 
         self.mu_head = nn.Linear(hidden_dim, latent_dim)
         self.logvar_head = nn.Linear(hidden_dim, latent_dim)
@@ -304,7 +376,8 @@ class AirLapse(nn.Module):
 
     def _encode_bottleneck(self, x, feature_hist, B, N):
         """Fused GRU; the last max_lag steps' hidden states become the
-        spatial attention's keys/values, each scored with its own wind."""
+        spatial attention's keys/values (and pm25_lag its transport
+        estimate's source values), each scored with its own wind."""
         output, h_n = self.encoder(x)                          # output: [B*N, T, hidden_dim]
         h_T = h_n[-1]
         h_grid = h_T.reshape(B, N, self.hidden_dim)
@@ -314,20 +387,27 @@ class AirLapse(nn.Module):
         lag_idxs = list(range(T - K, T))                       # oldest -> newest, newest = "now"
         h_lag = output[:, lag_idxs, :].reshape(B, N, K, self.hidden_dim).permute(0, 2, 1, 3)  # [B,K,N,hidden]
 
+        # x's channel 0 is raw/normalized PM2.5 (see forward(): x = cat([
+        # pm25_hist, feature_hist], -1)) - pull the same lag_idxs used for
+        # h_lag, same (B, K, N) layout.
+        pm25_lag = x[:, lag_idxs, 0].reshape(B, N, K).permute(0, 2, 1)  # [B, K, N]
+
         travel_bearing_lag, speed_kmh_lag = self._wind_at_idxs(feature_hist, lag_idxs, B, N)
         k_hours = torch.tensor(
             [(T - 1 - idx) * self.dt_hours for idx in lag_idxs],
             dtype=x.dtype, device=x.device,
         )
 
-        context = self.spatial_attn(h_grid, h_lag, travel_bearing_lag, speed_kmh_lag, k_hours)
-        h_mixed = self.mix_gate(torch.cat([h_grid, context], dim=-1))
+        context, transported = self.spatial_attn(
+            h_grid, h_lag, travel_bearing_lag, speed_kmh_lag, k_hours, pm25_lag)
+        h_mixed = self.mix_gate(torch.cat([h_grid, context, transported.unsqueeze(-1)], dim=-1))
         return h_mixed.reshape(B * N, self.hidden_dim)
 
     def _encode_per_step(self, x, feature_hist, B, N):
         """Unroll the encoder manually; at every step, K=1 (current step
-        only) - algebraically v4's original per-step attention plus one
-        extra (learnable-to-zero) bias term."""
+        only) - the transport estimate degrades to a single-lag evaluation
+        of the Green's function, see MultiLagPhysicsAwareSpatialAttention's
+        docstring."""
         T = x.shape[1]
         h = torch.zeros(B * N, self.hidden_dim, device=x.device, dtype=x.dtype)
 
@@ -338,11 +418,14 @@ class AirLapse(nn.Module):
 
             h_grid_t = h.reshape(B, N, self.hidden_dim)
             h_lag_t = h_grid_t.unsqueeze(1)                     # [B, 1, N, hidden_dim]
+            pm25_lag_t = x[:, t, 0].reshape(B, N).unsqueeze(1)  # [B, 1, N]
             travel_bearing_t, speed_kmh_t = self._wind_at_idxs(feature_hist, [t], B, N)
             k_hours = torch.zeros(1, dtype=x.dtype, device=x.device)
 
-            context_t = self.spatial_attn(h_grid_t, h_lag_t, travel_bearing_t, speed_kmh_t, k_hours)
-            h_mixed_t = self.mix_gate(torch.cat([h_grid_t, context_t], dim=-1))
+            context_t, transported_t = self.spatial_attn(
+                h_grid_t, h_lag_t, travel_bearing_t, speed_kmh_t, k_hours, pm25_lag_t)
+            h_mixed_t = self.mix_gate(
+                torch.cat([h_grid_t, context_t, transported_t.unsqueeze(-1)], dim=-1))
             h = h_mixed_t.reshape(B * N, self.hidden_dim)
 
         return h
