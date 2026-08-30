@@ -237,14 +237,52 @@ class _FrequencyWaveFilter(nn.Module):
 
 
 class _SelfAttentionBlock(nn.Module):
+    """Plain (manual matmul/softmax) multi-head self-attention, NOT
+    nn.MultiheadAttention - deliberately, not for style. This model folds
+    both the city dimension AND the channel dimension into batch (see
+    module docstring), so the "batch" dimension `nn.MultiheadAttention`
+    sees here is B * city_num * in_dim - at this repo's real scale
+    (184 stations, batch_size 32, in_dim ~13) that is on the order of
+    75,000. nn.MultiheadAttention's fast path dispatches to torch's
+    "memory-efficient" scaled_dot_product_attention backend on CUDA,
+    which has a hard, undocumented-until-you-hit-it ceiling of 65,535 on
+    that dimension (a CUDA kernel indexing limit in its RNG seed/offset
+    bookkeeping for dropout) - raising `RuntimeError: Efficient attention
+    cannot produce valid seed and offset outputs when the batch size
+    exceeds (65535)`. This was caught by an actual GPU run of this model
+    at full scale, not by this file's own (CPU-only, where the fallback
+    "math" SDPA backend has no such limit) standalone tests - a real,
+    reproducible bug in an earlier version of this file, not a hypothetical
+    one. Implementing attention with plain torch.matmul + softmax instead
+    never goes through that backend selection at all, so it has no such
+    ceiling regardless of how large the folded batch dimension gets."""
+
     def __init__(self, d_model, n_heads, dropout):
         super(_SelfAttentionBlock, self).__init__()
-        self.attn = nn.MultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True)
+        assert d_model % n_heads == 0, f"d_model={d_model} must be divisible by n_heads={n_heads}"
+        self.n_heads = n_heads
+        self.head_dim = d_model // n_heads
+        self.scale = self.head_dim ** -0.5
+        self.q_proj = nn.Linear(d_model, d_model)
+        self.k_proj = nn.Linear(d_model, d_model)
+        self.v_proj = nn.Linear(d_model, d_model)
+        self.out_proj = nn.Linear(d_model, d_model)
+        self.attn_dropout = nn.Dropout(dropout)
         self.norm = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        attn_out, _ = self.attn(x, x, x, need_weights=False)
+        # x: [B, seq, d_model]
+        B, L, D = x.shape
+        q = self.q_proj(x).view(B, L, self.n_heads, self.head_dim).transpose(1, 2)  # [B,H,L,hd]
+        k = self.k_proj(x).view(B, L, self.n_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(x).view(B, L, self.n_heads, self.head_dim).transpose(1, 2)
+
+        scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale          # [B,H,L,L]
+        weights = self.attn_dropout(torch.softmax(scores, dim=-1))
+        attn_out = torch.matmul(weights, v).transpose(1, 2).reshape(B, L, D)  # [B,L,D]
+        attn_out = self.out_proj(attn_out)
+
         return self.norm(x + self.dropout(attn_out))
 
 
