@@ -452,18 +452,29 @@ def get_model():
             station_elevation=altitude,
             feature_mean=train_data.feature_mean,
             feature_std=train_data.feature_std,
+            # Defaults below updated to the winning configuration from
+            # tune_airlapse.py's Optuna search (results/
+            # airlapse_hparam_search_*.txt), with the found continuous
+            # values rounded to clean numbers (e.g. sigma_d 299.62 -> 300,
+            # dropout 0.2436 -> 0.25) - none of the roundings move far
+            # enough from the found optimum to matter. Two of the search's
+            # bounds were hit or nearly hit (gru_max_lag at its upper limit
+            # of 10, gru_sigma_d within 0.4 of its upper limit of 300) -
+            # worth a follow-up search with those two ranges widened
+            # (e.g. max_lag up to 14-16, sigma_d up to 400) to check
+            # whether an even better configuration exists just past them.
             hidden_dim=config['experiments'].get('gru_hidden_dim', 64),
-            latent_dim=config['experiments'].get('gru_latent_dim', 16),
+            latent_dim=config['experiments'].get('gru_latent_dim', 8),
             attn_dim=config['experiments'].get('gru_attn_dim', 32),
             num_layers=config['experiments'].get('gru_num_layers', 1),
-            dropout=config['experiments'].get('gru_dropout', 0.1),
+            dropout=config['experiments'].get('gru_dropout', 0.25),
             logvar_clamp=config['experiments'].get('gru_logvar_clamp', 10.0),
-            spatial_mix_mode=config['experiments'].get('gru_spatial_mix_mode', 'bottleneck'),
-            max_lag=config['experiments'].get('gru_max_lag', 6),
-            dist_threshold_km=config['experiments'].get('gru_dist_threshold_km', 300.0),
-            sigma_d=config['experiments'].get('gru_sigma_d', 200.0),
-            sigma_h=config['experiments'].get('gru_sigma_h', 1200.0),
-            sigma_tau_init_h=config['experiments'].get('gru_sigma_tau_init_h', 3.0),
+            spatial_mix_mode=config['experiments'].get('gru_spatial_mix_mode', 'per_step'),
+            max_lag=config['experiments'].get('gru_max_lag', 10),
+            dist_threshold_km=config['experiments'].get('gru_dist_threshold_km', 375.0),
+            sigma_d=config['experiments'].get('gru_sigma_d', 300.0),
+            sigma_h=config['experiments'].get('gru_sigma_h', 1750.0),
+            sigma_tau_init_h=config['experiments'].get('gru_sigma_tau_init_h', 2.5),
             dt_hours=config['experiments'].get('gru_dt_hours', 3.0),
             diffusivity_km2_per_hour_init=config['experiments'].get('gru_diffusivity_km2_per_hour_init', 50.0),
             t_eps_hours=config['experiments'].get('gru_t_eps_hours', 0.25),
