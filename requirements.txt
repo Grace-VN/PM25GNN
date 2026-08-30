@@ -7,6 +7,13 @@
 torch
 torch_geometric
 torchdiffeq       # AirDDE, AirPhyNet, AirDualODE
+pytorch_wavelets  # WPMixer's wavelet decomposition (DWT1DForward/DWT1DInverse)
+PyWavelets        # pytorch_wavelets' actual runtime dependency (imports `pywt`
+                  # internally to fetch filter coefficients by wavelet name) -
+                  # not declared in pytorch_wavelets' own package metadata, so
+                  # listed explicitly here. Pure prebuilt wheels on every major
+                  # platform (unlike torch_scatter's CUDA-build coupling this
+                  # repo already avoids elsewhere) - safe, lightweight add.
 numpy
 scipy
 PyYAML

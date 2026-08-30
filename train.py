@@ -24,6 +24,7 @@ from model.airdualode import AirDualODEPM25
 from model.airlapse import AirLapse
 from model.mgsfformer import MGSFformerPM25
 from model.timexer import TimeXerPM25
+from model.wpmixer import WPMixerPM25
 from model.agcrn import AGCRNPM25
 from model.megacrn import MegaCRNPM25
 
@@ -55,22 +56,23 @@ except ImportError:
 # on model selection/dispatch (that's still the plain exp_model string).
 # PM25_GNN_nosub/GC_LSTM/nodesFC_GRU are deliberately unnumbered (order
 # None - PM25_GNN ablation/baseline-suite siblings, not separately
-# ranked); numbering runs 1-17 across the rest.
+# ranked); numbering runs 1-18 across the rest.
 MODEL_CATALOG = {
     'MLP': (1, 1986), 'LSTM': (2, 1997), 'GRU': (3, 2014),
     'AGCRN': (4, 2020), 'MegaCRN': (5, 2023),
     'Informer': (6, 2021), 'Autoformer': (7, 2021), 'PatchTST': (8, 2023),
     'STAEformer': (9, 2023), 'MGSFformer': (10, 2025), 'TimeXer': (11, 2024),
-    'PM25_GNN': (12, 2020),
+    'WPMixer': (12, 2025),
+    'PM25_GNN': (13, 2020),
     'PM25_GNN_nosub': (None, 2020), 'GC_LSTM': (None, 2020), 'nodesFC_GRU': (None, 2020),
-    'AirDDE': (13, 2026), 'AirPhyNet': (14, 2024), 'AirDualODE': (15, 2025),
-    'AirFormer': (16, 2023),
-    'AirLapse': (17, 2026),
+    'AirDDE': (14, 2026), 'AirPhyNet': (15, 2024), 'AirDualODE': (16, 2025),
+    'AirFormer': (17, 2023),
+    'AirLapse': (18, 2026),
 }
 
 
 def _catalog_label(exp_model_name):
-    """'AirLapse' -> '17. AirLapse 2026'; an unnumbered entry (order None,
+    """'AirLapse' -> '18. AirLapse 2026'; an unnumbered entry (order None,
     e.g. 'GC_LSTM') -> 'GC_LSTM 2020' (no leading 'N. '). Falls back to the
     plain name if exp_model_name isn't in MODEL_CATALOG at all, e.g. right
     after adding a new model here before its catalog entry is added."""
@@ -315,6 +317,25 @@ def get_model():
             factor=config['experiments'].get('timexer_factor', 5),
             activation=config['experiments'].get('timexer_activation', 'gelu'),
             use_norm=config['experiments'].get('timexer_use_norm', True),
+        )
+    elif exp_model == 'WPMixer':
+        # History-only baseline like TimeXer/MGSFformer above: WPMixer's
+        # published architecture is purely autoregressive from the lookback
+        # window - see model/wpmixer.py's docstring for confirmation (its
+        # own short-term-forecast wrapper discards three extra dataloader
+        # args a future-covariate-aware model would use).
+        return WPMixerPM25(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            d_model=config['experiments'].get('wpmixer_d_model', 16),
+            dropout=config['experiments'].get('wpmixer_dropout', 0.1),
+            embedding_dropout=config['experiments'].get('wpmixer_embedding_dropout', 0.1),
+            tfactor=config['experiments'].get('wpmixer_tfactor', 3),
+            dfactor=config['experiments'].get('wpmixer_dfactor', 5),
+            wavelet=config['experiments'].get('wpmixer_wavelet', 'db2'),
+            level=config['experiments'].get('wpmixer_level', 1),
+            patch_len=config['experiments'].get('wpmixer_patch_len', 4),
+            stride=config['experiments'].get('wpmixer_stride', 2),
+            no_decomposition=config['experiments'].get('wpmixer_no_decomposition', False),
         )
     elif exp_model == 'PM25_GNN':
         return PM25_GNN(hist_len, pred_len, in_dim, city_num, batch_size, device, graph.edge_index, graph.edge_attr, wind_mean, wind_std)
