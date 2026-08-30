@@ -152,7 +152,7 @@ def run_trial(trial, search_epochs, search_early_stop):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--n_trials', type=int, default=30)
-    ap.add_argument('--search_epochs', type=int, default=10,
+    ap.add_argument('--search_epochs', type=int, default=50,
                      help='epoch budget per trial during the search (kept short - not a full training run)')
     ap.add_argument('--search_early_stop', type=int, default=3,
                      help='per-trial early-stop patience during the search')
