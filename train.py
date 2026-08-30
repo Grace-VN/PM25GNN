@@ -25,6 +25,7 @@ from model.airlapse import AirLapse
 from model.mgsfformer import MGSFformerPM25
 from model.timexer import TimeXerPM25
 from model.wpmixer import WPMixerPM25
+from model.dtaf import DTAFPM25
 from model.agcrn import AGCRNPM25
 from model.megacrn import MegaCRNPM25
 
@@ -56,23 +57,23 @@ except ImportError:
 # on model selection/dispatch (that's still the plain exp_model string).
 # PM25_GNN_nosub/GC_LSTM/nodesFC_GRU are deliberately unnumbered (order
 # None - PM25_GNN ablation/baseline-suite siblings, not separately
-# ranked); numbering runs 1-18 across the rest.
+# ranked); numbering runs 1-19 across the rest.
 MODEL_CATALOG = {
     'MLP': (1, 1986), 'LSTM': (2, 1997), 'GRU': (3, 2014),
     'AGCRN': (4, 2020), 'MegaCRN': (5, 2023),
     'Informer': (6, 2021), 'Autoformer': (7, 2021), 'PatchTST': (8, 2023),
     'STAEformer': (9, 2023), 'MGSFformer': (10, 2025), 'TimeXer': (11, 2024),
-    'WPMixer': (12, 2025),
-    'PM25_GNN': (13, 2020),
+    'WPMixer': (12, 2025), 'DTAF': (13, 2026),
+    'PM25_GNN': (14, 2020),
     'PM25_GNN_nosub': (None, 2020), 'GC_LSTM': (None, 2020), 'nodesFC_GRU': (None, 2020),
-    'AirDDE': (14, 2026), 'AirPhyNet': (15, 2024), 'AirDualODE': (16, 2025),
-    'AirFormer': (17, 2023),
-    'AirLapse': (18, 2026),
+    'AirDDE': (15, 2026), 'AirPhyNet': (16, 2024), 'AirDualODE': (17, 2025),
+    'AirFormer': (18, 2023),
+    'AirLapse': (19, 2026),
 }
 
 
 def _catalog_label(exp_model_name):
-    """'AirLapse' -> '18. AirLapse 2026'; an unnumbered entry (order None,
+    """'AirLapse' -> '19. AirLapse 2026'; an unnumbered entry (order None,
     e.g. 'GC_LSTM') -> 'GC_LSTM 2020' (no leading 'N. '). Falls back to the
     plain name if exp_model_name isn't in MODEL_CATALOG at all, e.g. right
     after adding a new model here before its catalog entry is added."""
@@ -117,6 +118,13 @@ kl_weight = config['train'].get('kl_weight', 0.01)
 # `last_alignment_loss`) - same opt-in mechanism as kl_weight above, just
 # for a differently-meaning auxiliary loss so the two aren't conflated.
 alignment_weight = config['train'].get('alignment_weight', 0.1)
+# Weight for an optional expert-diversity regularization term (currently
+# just DTAF's mixture-of-experts KL-diversity loss, exposed via
+# `last_moe_diversity_loss`) - same opt-in mechanism as kl_weight/
+# alignment_weight above, kept as its own name since it isn't the same
+# quantity as either (a diversity-among-experts term, not a VAE-style
+# latent KL or a physics/data-branch alignment loss).
+moe_diversity_weight = config['train'].get('moe_diversity_weight', 0.01)
 
 train_data = HazeData(graph, hist_len, pred_len, dataset_num, flag='Train')
 val_data = HazeData(graph, hist_len, pred_len, dataset_num, flag='Val')
@@ -337,6 +345,25 @@ def get_model():
             stride=config['experiments'].get('wpmixer_stride', 2),
             no_decomposition=config['experiments'].get('wpmixer_no_decomposition', False),
         )
+    elif exp_model == 'DTAF':
+        # History-only baseline like WPMixer/TimeXer/MGSFformer above: the
+        # architecture described in DTAF's own paper has no point where a
+        # future-known covariate would enter - see model/dtaf.py's
+        # docstring. Also note that file's docstring explains this is an
+        # INDEPENDENT REIMPLEMENTATION from the paper's own description,
+        # not a port - the official repo has no license.
+        return DTAFPM25(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            patch_len=config['experiments'].get('dtaf_patch_len', 8),
+            stride=config['experiments'].get('dtaf_stride', 4),
+            d_model=config['experiments'].get('dtaf_d_model', 32),
+            n_heads=config['experiments'].get('dtaf_n_heads', 4),
+            e_layers=config['experiments'].get('dtaf_e_layers', 2),
+            expert_num=config['experiments'].get('dtaf_expert_num', 4),
+            expert_reduction=config['experiments'].get('dtaf_expert_reduction', 2),
+            topk_freq=config['experiments'].get('dtaf_topk_freq', 8),
+            dropout=config['experiments'].get('dtaf_dropout', 0.1),
+        )
     elif exp_model == 'PM25_GNN':
         return PM25_GNN(hist_len, pred_len, in_dim, city_num, batch_size, device, graph.edge_index, graph.edge_attr, wind_mean, wind_std)
     elif exp_model == 'PM25_GNN_nosub':
@@ -474,6 +501,9 @@ def train(train_loader, model, optimizer):
         memory_loss = getattr(model, 'last_memory_loss', None)
         if memory_loss is not None:
             loss = loss + memory_loss
+        moe_diversity = getattr(model, 'last_moe_diversity_loss', None)
+        if moe_diversity is not None:
+            loss = loss + moe_diversity_weight * moe_diversity
         loss.backward()
         optimizer.step()
         train_loss += loss.item()
