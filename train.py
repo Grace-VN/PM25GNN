@@ -411,6 +411,7 @@ def get_model():
             ode_atol=config['experiments'].get('airphynet_ode_atol', 1e-4),
             ode_adjoint=config['experiments'].get('airphynet_ode_adjoint', True),
             filter_type=config['experiments'].get('airphynet_filter_type', 'diff_adv'),
+            max_deriv=config['experiments'].get('airphynet_max_deriv', 10.0),
         )
     elif exp_model == 'AirDualODE':
         return AirDualODEPM25(

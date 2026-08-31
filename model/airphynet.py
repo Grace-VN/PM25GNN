@@ -132,12 +132,13 @@ class _ODEFunc(nn.Module):
 
     def __init__(self, latent_dim, edge_index, num_nodes, gcn_step=2,
                  filter_type='diff_adv', gen_dim=64, gen_layers=1,
-                 diff_coeff=0.1, wind_hidden_dim=16):
+                 diff_coeff=0.1, wind_hidden_dim=16, max_deriv=10.0):
         super(_ODEFunc, self).__init__()
         self.latent_dim = latent_dim
         self.num_nodes = num_nodes
         self.filter_type = filter_type
         self.diff_coeff = diff_coeff
+        self.max_deriv = max_deriv
 
         self.register_buffer('edge_index', torch.as_tensor(edge_index, dtype=torch.long))
 
@@ -184,7 +185,20 @@ class _ODEFunc(nn.Module):
         edge_index = torch.cat(edge_indices, dim=1)
         edge_weight = edge_weight.reshape(-1)
 
-        out = self.adv_conv(x_flat, edge_index, edge_weight, batch=batch, lambda_max=2)
+        # lambda_max=None (not a hardcoded 2): unlike diff_conv above,
+        # this ChebConv uses normalization=None (a raw/combinatorial
+        # Laplacian built from a SIGNED edge weight, since flow can be
+        # negative) - its eigenvalues are not guaranteed to lie in [0, 2]
+        # the way a symmetric-normalized Laplacian's are, so a hardcoded
+        # lambda_max=2 silently mis-scales the Chebyshev recursion
+        # whenever the learned wind_flow_net's actual weight magnitudes
+        # push the true spectral radius past that. Passing None instead
+        # lets ChebConv fall back to its own 2*edge_weight.max() estimate,
+        # scaled to the weights actually present each forward call, which
+        # is what fixed a real "underflow in dt" crash from the resulting
+        # exponential blow-up compounding over a longer pred_len/ODE
+        # integration horizon (reported on dataset 2, pred_len=24).
+        out = self.adv_conv(x_flat, edge_index, edge_weight, batch=batch, lambda_max=None)
         return out.reshape(B, N, D)
 
     def forward(self, t, z):
@@ -201,6 +215,15 @@ class _ODEFunc(nn.Module):
         else:  # 'unkP'
             grad = self.unk_net(x)
 
+        # Soft-bound the vector field's magnitude. An unbounded RHS lets a
+        # neural ODE's state grow (or its adjoint's backward step size
+        # shrink) without limit over a long-enough integration horizon -
+        # torchdiffeq surfaces that as "underflow in dt" once its adaptive
+        # solver can no longer take a step small enough to satisfy its
+        # error tolerance. This saturates |dz/dt| well below that failure
+        # point without materially changing the learned dynamics in the
+        # normal (small-derivative) operating regime.
+        grad = self.max_deriv * torch.tanh(grad / self.max_deriv)
         return grad.reshape(B, self.num_nodes * self.latent_dim)
 
 
@@ -210,7 +233,7 @@ class AirPhyNetPM25(nn.Module):
                  rnn_units=64, latent_dim=4, gcn_step=2, diff_coeff=0.1,
                  n_traj_samples=1, ode_method='dopri5', ode_rtol=1e-3, ode_atol=1e-4,
                  ode_adjoint=True, filter_type='diff_adv', gen_dim=64, gen_layers=1,
-                 wind_hidden_dim=16):
+                 wind_hidden_dim=16, max_deriv=10.0):
         super(AirPhyNetPM25, self).__init__()
         self.hist_len = hist_len
         self.pred_len = pred_len
@@ -236,6 +259,7 @@ class AirPhyNetPM25(nn.Module):
         self.odefunc = _ODEFunc(
             latent_dim, edge_index, city_num, gcn_step=gcn_step, filter_type=filter_type,
             gen_dim=gen_dim, gen_layers=gen_layers, diff_coeff=diff_coeff, wind_hidden_dim=wind_hidden_dim,
+            max_deriv=max_deriv,
         )
         self.ode_method = ode_method
         self.ode_rtol = ode_rtol
