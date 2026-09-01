@@ -140,5 +140,20 @@ KnowAir.npy
 # output or ~300MB user-supplied data, so it's fine (and necessary) to ship.
 !data/altitude.npy
 
+# ...and data/SensorAir.npy: also small (4.3MB) and, unlike KnowAir.npy,
+# built from a ~268MB raw source (data/data.csv, see
+# data/prepare_sensor_dataset.py) that's too large to commit and isn't
+# tracked here - shipping the small derived .npy directly (plus
+# site_sensor.txt below) is what lets dataset_num 4 work on a fresh
+# clone with no extra download, matching KnowAir/dataset 1-3's
+# "just clone and run" experience despite data.csv being absent.
+!data/SensorAir.npy
+
+# data/data.csv: the ~268MB raw source above - regenerate SensorAir.npy/
+# site_sensor.txt from it (data/prepare_sensor_dataset.py) only if you
+# want a different window/site-coverage tradeoff than the committed one;
+# not needed otherwise, and too large to commit itself.
+data/data.csv
+
 # Editor-specific settings (machine-local paths, not meant to be shared)
 .vscode/

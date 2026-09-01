@@ -67,7 +67,7 @@ filepath:
 #  model: PM25_GNN_nosub
 ```
 
-- Choose the sub-datast number in [1,2,3].
+- Choose the sub-dataset number in [1,2,3,4]. 1-3 are date-range subsets of **KnowAir** (184 China cities, 3-hourly). 4 is a geographically and structurally distinct second dataset - a 197-node hourly low-cost PM2.5 sensor network - added for diversity rather than for strict comparability with 1-3; see [Dataset 4: Hourly Sensor Network](#dataset-4-hourly-sensor-network) below.
 
 ```python
  dataset_num: 3
@@ -125,6 +125,20 @@ The repo works out of the box on a fresh clone (Kaggle, Colab, or otherwise) - `
    ```bash
    !python train.py
    ```
+
+## Dataset 4: Hourly Sensor Network
+
+A second, structurally distinct dataset - 197 nodes, hourly, 2023-05-14 00:00 through 2023-06-02 16:00 (~19.7 days) - built from `data/data.csv` (a ~2.27M-row, 6,031-site low-cost PM2.5 sensor feed spanning Sep 2022 - Jun 2023) via `data/prepare_sensor_dataset.py`. Chosen for diversity, not strict comparability with KnowAir 1-3: most of the source's 6,031 sites are short-lived (median site reports only ~4% of the ~6,000-hour collection span), so the script picks the one window/site-set combination where coverage is actually usable - the 197 sites with >=95% hourly coverage in the final ~20 days, when a large batch of new sensors joined the network. See the script's module docstring for the full reasoning and what's approximated (a shared ~20-hour network outage is linear-interpolated, affecting ~8% of values including PM2.5 itself; PM values are raw/uncalibrated low-cost-sensor readings).
+
+Unlike the region/graph limitations of an earlier, since-removed dataset_num 4 attempt, this one has **real** measured `wind_speed10`/`wind_direction10` (not a derived or placeholder direction) and **real** per-site elevation (not zero-filled) - see `graph.py`'s `Graph._gen_nodes` (reads `data/site_sensor.txt`'s 5th column directly) and `dataset.py`'s `family == 'sensor'` branch. Nodes are also genuinely locally-spaced (dense regional clusters, e.g. the Bay Area/LA/Seattle), which is closer to what the wind-advection graph models (PM25_GNN, AirDDE, AirPhyNet, AirDualODE, AirFormer) are actually designed for than a coarse one-node-per-state/-country set would be.
+
+Unlike `KnowAir.npy`, the ~268MB raw source (`data/data.csv`) is too large to commit and isn't shipped - but `data/SensorAir.npy` (4.3MB) and `data/site_sensor.txt` (the derived node list) *are* committed directly, so this needs no external download at all: just set `dataset_num: 4` in `config.yaml` and run `train.py`. On Kaggle/Colab this means skipping step 2 of [Running on Kaggle](#running-on-kaggle) entirely (no `KnowAir.npy` to attach, nothing to download) - clone, `pip install -r requirements.txt`, set `dataset_num: 4`, train.
+
+Only re-run the conversion if you want a different window/site-coverage tradeoff than the one already committed (see `prepare_sensor_dataset.py`'s docstring for how that tradeoff was chosen) - it needs `data/data.csv` present, which you'd have to get from the original source yourself:
+
+```bash
+python data/prepare_sensor_dataset.py
+```
 
 ## Reference
 

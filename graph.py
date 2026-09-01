@@ -18,18 +18,44 @@ altitude_fp = os.path.join(proj_dir, 'data/altitude.npy')
 
 
 class Graph():
-    def __init__(self):
+    def __init__(self, city_fp=city_fp, use_altitude=True, k_neighbors=None):
+        """
+        city_fp: path to a node list file, "idx city lon lat" (the
+            original 184-city China list) or "idx city lon lat elevation"
+            (a 5th column of real per-node elevation, e.g.
+            data/site_sensor.txt - see _gen_nodes). Defaults to the China
+            list.
+        use_altitude: whether to load data/altitude.npy and use it both
+            as a fallback node attribute (only for 4-column city_fp - a
+            5-column file's own elevation always wins, see _gen_nodes)
+            and to prune edges that cross a ridge (_update_edges). Only
+            meaningful for the default China city_fp - altitude.npy is a
+            raster over a fixed China bounding box (see _lonlat2xy), not
+            valid for other regions. Pass False for any other city_fp.
+        k_neighbors: if set, edges are a symmetric k-nearest-neighbor
+            graph by geodesic distance (_gen_edges_knn) instead of the
+            fixed-degree distance threshold (self.dist_thres). Use this
+            for city/site sets that don't share KnowAir's roughly-uniform
+            spacing - a fixed threshold either over- or under-connects
+            regions of very different density (e.g. it would leave
+            geographically remote nodes with zero edges).
+        """
         self.dist_thres = 3
         self.alti_thres = 1200
-        self.use_altitude = True
+        self.use_altitude = use_altitude
+        self.k_neighbors = k_neighbors
+        self.city_fp = city_fp
 
-        self.altitude = self._load_altitude()
+        self.altitude = self._load_altitude() if use_altitude else None
         self.nodes = self._gen_nodes()
         self.node_attr = self._add_node_attr()
         self.node_num = len(self.nodes)
-        self.edge_index, self.edge_attr = self._gen_edges()
-        if self.use_altitude:
-            self._update_edges()
+        if self.k_neighbors is not None:
+            self.edge_index, self.edge_attr = self._gen_edges_knn()
+        else:
+            self.edge_index, self.edge_attr = self._gen_edges()
+            if self.use_altitude:
+                self._update_edges()
         self.edge_num = self.edge_index.shape[1]
         self.adj = to_dense_adj(torch.LongTensor(self.edge_index))[0]
 
@@ -57,13 +83,26 @@ class Graph():
 
     def _gen_nodes(self):
         nodes = OrderedDict()
-        with open(city_fp, 'r') as f:
+        with open(self.city_fp, 'r') as f:
             for line in f:
-                idx, city, lon, lat = line.rstrip('\n').split(' ')
+                tokens = line.rstrip('\n').split(' ')
+                if len(tokens) == 5:
+                    # "idx city lon lat elevation" - real per-node
+                    # elevation supplied directly (e.g. data/site_sensor.txt),
+                    # no raster lookup needed or possible (there's no
+                    # continuous terrain raster for these sites, just a
+                    # point value each).
+                    idx, city, lon, lat, elevation = tokens
+                    altitude = float(elevation)
+                else:
+                    idx, city, lon, lat = tokens
+                    if self.altitude is not None:
+                        x, y = self._lonlat2xy(float(lon), float(lat), True)
+                        altitude = self.altitude[y, x]
+                    else:
+                        altitude = 0.0
                 idx = int(idx)
                 lon, lat = float(lon), float(lat)
-                x, y = self._lonlat2xy(lon, lat, True)
-                altitude = self.altitude[y, x]
                 nodes.update({idx: {'city': city, 'altitude': altitude, 'lon': lon, 'lat': lat}})
         return nodes
 
@@ -159,6 +198,60 @@ class Graph():
 
         self.edge_index = np.stack(edge_index, axis=1)
         self.edge_attr = np.stack(edge_attr, axis=0)
+
+    def _gen_edges_knn(self):
+        """Symmetric k-nearest-neighbor graph by real geodesic distance
+        (km), for node sets whose spacing is too uneven for a single
+        fixed distance threshold (self._gen_edges) to make sense - e.g.
+        a sensor network spanning Hawaii to the East Coast, where most
+        nodes cluster within a state or two but a handful sit thousands
+        of km from their nearest neighbor. A fixed threshold either
+        connects almost nothing out there or (raised enough to reach
+        them) over-connects the dense clusters instead.
+        Every node gets >= k_neighbors edges; edge i->j is kept if j is
+        among i's k nearest neighbors OR i is among j's (OR, not AND, so
+        the resulting graph is symmetric even though "k nearest" itself
+        isn't - a mutual-nearest-neighbor requirement can drop a remote
+        node to degree 0, which is exactly the failure mode this avoids).
+        edge_attr layout matches _gen_edges: [dist_km, direction_deg].
+        """
+        n = self.node_num
+        idx = list(self.nodes.keys())
+        lats = np.array([self.nodes[i]['lat'] for i in idx])
+        lons = np.array([self.nodes[i]['lon'] for i in idx])
+
+        dist_km = np.zeros((n, n))
+        for a in range(n):
+            for b in range(n):
+                if a != b:
+                    dist_km[a, b] = geodesic((lats[a], lons[a]), (lats[b], lons[b])).kilometers
+
+        k = min(self.k_neighbors, n - 1)
+        adj = np.zeros((n, n), dtype=bool)
+        # argsort each row; column 0 is the node itself (distance 0)
+        nearest = np.argsort(dist_km, axis=1)[:, 1:k + 1]
+        for a in range(n):
+            adj[a, nearest[a]] = True
+        adj = adj | adj.T
+        np.fill_diagonal(adj, False)
+
+        src, dst = np.nonzero(adj)
+        edge_index = np.stack([src, dst], axis=0)
+
+        direc_arr = []
+        dist_arr = []
+        for e in range(edge_index.shape[1]):
+            a, b = idx[edge_index[0, e]], idx[edge_index[1, e]]
+            dist_arr.append(dist_km[edge_index[0, e], edge_index[1, e]])
+            src_lat, src_lon = self.nodes[a]['lat'], self.nodes[a]['lon']
+            dest_lat, dest_lon = self.nodes[b]['lat'], self.nodes[b]['lon']
+            v, u = src_lat - dest_lat, src_lon - dest_lon
+            u = u * units.meter / units.second
+            v = v * units.meter / units.second
+            direc_arr.append(mpcalc.wind_direction(u, v)._magnitude)
+
+        attr = np.stack([np.stack(dist_arr), np.stack(direc_arr)], axis=-1)
+        return edge_index, attr
 
 
 if __name__ == '__main__':
