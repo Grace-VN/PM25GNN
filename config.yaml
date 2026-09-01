@@ -115,3 +115,36 @@ dataset:
     val_end: [[2016, 12, 31], GMT]
     test_start: [[2017, 1, 1], GMT]
     test_end: [[2017, 1, 31], GMT]
+
+  # Dataset 4: US state capitals (51 nodes: 50 states + DC), built from
+  # data/US-modified.csv by data/prepare_us_dataset.py into USAir.npy - a
+  # geographically distinct second dataset (per-owner decision: chosen for
+  # geographic diversity, not for being comparable to KnowAir 1-3 above).
+  # Differs from the KnowAir family in every dimension the other three
+  # share: daily (not 3-hourly - see freq_hours), 51 nodes (not 184), only
+  # 3 raw meteo variables with no wind direction (see dataset.py's
+  # US_METERO_VAR / family == 'us' branch), and no altitude raster (see
+  # graph.py - Graph is built with use_altitude=False, k_neighbors set,
+  # for this dataset). data_start/data_end/data_fp/city_fp/family/
+  # freq_hours below override the KnowAir-wide defaults further up this
+  # file (data_start, data_end) and in dataset.py (family: 'knowair',
+  # freq_hours: 3, knowair_fp from filepath: above) - see HazeData.__init__.
+  4:
+    family: us
+    data_fp: data/USAir.npy
+    city_fp: data/city_us.txt
+    # Stations are spread very unevenly (dense across CONUS, Honolulu/
+    # Juneau thousands of km from anything else) - a fixed distance
+    # threshold like the KnowAir graph's would leave outliers disconnected,
+    # so graph.py builds a k-nearest-neighbor graph instead (see
+    # Graph._gen_edges_knn). This is that k.
+    k_neighbors: 5
+    freq_hours: 24
+    data_start: [[2019, 1, 1], GMT]
+    data_end: [[2025, 7, 31], GMT]
+    train_start: [[2019, 1, 1], GMT]
+    train_end: [[2022, 12, 31], GMT]
+    val_start: [[2023, 1, 1], GMT]
+    val_end: [[2023, 12, 31], GMT]
+    test_start: [[2024, 1, 1], GMT]
+    test_end: [[2025, 7, 31], GMT]

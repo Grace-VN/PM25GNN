@@ -13,6 +13,14 @@ from torch.utils import data
 import torch
 
 
+# Fixed feature layout written by data/prepare_us_dataset.py into
+# USAir.npy (order matters - see _process_feature's 'us' branch below).
+# Unlike the KnowAir family, there's no metero_use-style ablation list for
+# this dataset - only 3 raw variables exist in the source CSV to begin
+# with, so all of them are always used.
+US_METERO_VAR = ['temperature_c', 'humidity_percent', 'wind_speed_mps']
+
+
 class HazeData(data.Dataset):
 
     def __init__(self, graph,
@@ -34,12 +42,31 @@ class HazeData(data.Dataset):
         else:
             raise Exception('Wrong Flag!')
 
-        self.start_time = self._get_time(config['dataset'][dataset_num][start_time_str])
-        self.end_time = self._get_time(config['dataset'][dataset_num][end_time_str])
-        self.data_start = self._get_time(config['dataset']['data_start'])
-        self.data_end = self._get_time(config['dataset']['data_end'])
+        ds_cfg = config['dataset'][dataset_num]
+        # 'family' distinguishes the original KnowAir-derived datasets
+        # (1-3: same 184-city, 3-hourly array, just different date-range
+        # subsets of it) from a differently-shaped dataset like 4 (US
+        # state capitals: 51 nodes, daily, its own feature set). Every key
+        # below falls back to the KnowAir-family default when absent, so
+        # config.yaml's existing 1/2/3 entries don't need to change.
+        self.family = ds_cfg.get('family', 'knowair')
+        self.freq_hours = ds_cfg.get('freq_hours', 3)
 
-        self.knowair_fp = file_dir['knowair_fp']
+        self.start_time = self._get_time(ds_cfg[start_time_str])
+        self.end_time = self._get_time(ds_cfg[end_time_str])
+        self.data_start = self._get_time(ds_cfg.get('data_start', config['dataset']['data_start']))
+        self.data_end = self._get_time(ds_cfg.get('data_end', config['dataset']['data_end']))
+
+        if 'data_fp' in ds_cfg:
+            # NB: proj_dir (module-level, above) is this file's *parent*
+            # directory, not the repo root dataset.py itself lives in
+            # (pre-existing oddity - harmless there since nothing else
+            # joins paths against it) - resolve data_fp against the repo
+            # root directly instead of reusing that constant.
+            repo_dir = os.path.dirname(os.path.abspath(__file__))
+            self.knowair_fp = os.path.join(repo_dir, ds_cfg['data_fp'])
+        else:
+            self.knowair_fp = file_dir['knowair_fp']
 
         self.graph = graph
 
@@ -77,21 +104,44 @@ class HazeData(data.Dataset):
     def _calc_mean_std(self):
         self.feature_mean = self.feature.mean(axis=(0,1))
         self.feature_std = self.feature.std(axis=(0,1))
+        # A constant column (std 0) would divide-by-zero into NaN in
+        # _norm() below - happens for real with the 'us' family's wind
+        # direction placeholder (dataset.py's US_METERO_VAR branch fills
+        # it with all zeros, since the source CSV has no real direction).
+        # Clamping to 1 leaves a genuinely constant feature at a constant
+        # (zero) normalized value instead of NaN; harmless for the
+        # KnowAir family, whose real weather columns are never exactly
+        # constant across the whole time range.
+        self.feature_std[self.feature_std == 0] = 1.0
         self.wind_mean = self.feature_mean[-2:]
         self.wind_std = self.feature_std[-2:]
         self.pm25_mean = self.pm25.mean()
         self.pm25_std = self.pm25.std()
 
     def _process_feature(self):
-        metero_var = config['data']['metero_var']
-        metero_use = config['experiments']['metero_use']
-        metero_idx = [metero_var.index(var) for var in metero_use]
-        self.feature = self.feature[:,:,metero_idx]
+        if self.family == 'us':
+            # USAir.npy already stores exactly US_METERO_VAR, in that
+            # order (see data/prepare_us_dataset.py) - no metero_use-style
+            # selection to do. The source CSV has a scalar wind speed but
+            # no u/v components, so there's no way to derive a real wind
+            # direction the way the KnowAir branch below does; a constant
+            # placeholder is used instead. Models that turn direction into
+            # an advection term (PM25_GNN-style GraphGNN) therefore fall
+            # back to a fixed geometric bias per edge rather than true
+            # wind-driven transport for this dataset - a known, accepted
+            # limitation (see prepare_us_dataset.py's module docstring).
+            speed = 3.6 * self.feature[:, :, US_METERO_VAR.index('wind_speed_mps')]
+            direc = np.zeros_like(speed)
+        else:
+            metero_var = config['data']['metero_var']
+            metero_use = config['experiments']['metero_use']
+            metero_idx = [metero_var.index(var) for var in metero_use]
+            self.feature = self.feature[:,:,metero_idx]
 
-        u = self.feature[:, :, -2] * units.meter / units.second
-        v = self.feature[:, :, -1] * units.meter / units.second
-        speed = 3.6 * mpcalc.wind_speed(u, v)._magnitude
-        direc = mpcalc.wind_direction(u, v)._magnitude
+            u = self.feature[:, :, -2] * units.meter / units.second
+            v = self.feature[:, :, -1] * units.meter / units.second
+            speed = 3.6 * mpcalc.wind_speed(u, v)._magnitude
+            direc = mpcalc.wind_direction(u, v)._magnitude
 
         h_arr = []
         w_arr = []
@@ -118,7 +168,7 @@ class HazeData(data.Dataset):
     def _gen_time_arr(self):
         self.time_arrow = []
         self.time_arr = []
-        for time_arrow in arrow.Arrow.interval('hour', self.data_start, self.data_end.shift(hours=+3), 3):
+        for time_arrow in arrow.Arrow.interval('hour', self.data_start, self.data_end.shift(hours=+self.freq_hours), self.freq_hours):
             self.time_arrow.append(time_arrow[0])
             # use timestamp() method to get numeric value (avoid method object)
             self.time_arr.append(time_arrow[0].timestamp())
@@ -131,7 +181,7 @@ class HazeData(data.Dataset):
 
     def _get_idx(self, t):
         t0 = self.data_start
-        return int((t.timestamp() - t0.timestamp()) / (60 * 60 * 3))
+        return int((t.timestamp() - t0.timestamp()) / (60 * 60 * self.freq_hours))
 
     def _get_time(self, time_yaml):
         arrow_time = arrow.get(datetime(*time_yaml[0]), time_yaml[1])

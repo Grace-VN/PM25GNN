@@ -67,7 +67,7 @@ filepath:
 #  model: PM25_GNN_nosub
 ```
 
-- Choose the sub-datast number in [1,2,3].
+- Choose the sub-dataset number in [1,2,3,4]. 1-3 are date-range subsets of **KnowAir** (184 China cities, 3-hourly). 4 is a geographically distinct second dataset - 51 US state capitals, daily - added for diversity across geographies rather than for strict comparability with 1-3; see [Dataset 4: US State Capitals](#dataset-4-us-state-capitals) below.
 
 ```python
  dataset_num: 3
@@ -125,6 +125,18 @@ The repo works out of the box on a fresh clone (Kaggle, Colab, or otherwise) - `
    ```bash
    !python train.py
    ```
+
+## Dataset 4: US State Capitals
+
+A second, geographically distinct dataset - 51 nodes (50 US states + DC), daily resolution, 2019-01-01 through 2025-07-31 - built from `data/US-modified.csv` (committed to the repo, ~8MB) via `data/prepare_us_dataset.py`. Chosen for geographic diversity, not to be strictly comparable to KnowAir 1-3: it's daily instead of 3-hourly, has only 3 raw weather variables (temperature, humidity, wind speed - no wind direction, no altitude data for these stations), and uses a k-nearest-neighbor graph instead of KnowAir's distance-threshold one (the 51 capitals are too unevenly spaced - e.g. Honolulu and Juneau are thousands of km from every other node - for a single fixed threshold to make sense). See the comments in `config.yaml`'s `dataset: 4` block, `graph.py`'s `Graph._gen_edges_knn`, and `dataset.py`'s `family == 'us'` branch for the full details of what differs and why.
+
+Unlike 1-3, this dataset needs no external download - `data/USAir.npy` (gitignored like `KnowAir.npy`, but small and fast to build) is generated on demand:
+
+```bash
+python data/prepare_us_dataset.py
+```
+
+Then set `dataset_num: 4` in `config.yaml` and run `train.py` as usual. On Kaggle/Colab, this means you can skip step 2 of [Running on Kaggle](#running-on-kaggle) (no `KnowAir.npy` to attach or download) - just clone, `pip install -r requirements.txt`, run the command above, set `dataset_num: 4`, and train.
 
 ## Reference
 

@@ -89,9 +89,6 @@ torch.set_num_threads(1)
 use_cuda = torch.cuda.is_available()
 device = torch.device('cuda' if use_cuda else 'cpu')
 
-graph = Graph()
-city_num = graph.node_num
-
 batch_size = config['train']['batch_size']
 epochs = config['train']['epochs']
 hist_len = config['train']['hist_len']
@@ -102,6 +99,22 @@ lr = config['train']['lr']
 results_dir = file_dir['results_dir']
 dataset_num = config['experiments']['dataset_num']
 exp_model = config['experiments']['model']
+
+# dataset_num must be read before building Graph(): datasets 1-3 share the
+# same 184-city China graph (city.txt + altitude.npy), but dataset 4 (US
+# state capitals) is a different city set with no altitude raster of its
+# own, needing a different Graph() call - see graph.py's Graph.__init__
+# and config.yaml's dataset: 4 block.
+_ds_cfg = config['dataset'][dataset_num]
+if _ds_cfg.get('family', 'knowair') == 'us':
+    graph = Graph(
+        city_fp=os.path.join(proj_dir, _ds_cfg['city_fp']),
+        use_altitude=False,
+        k_neighbors=_ds_cfg.get('k_neighbors', 5),
+    )
+else:
+    graph = Graph()
+city_num = graph.node_num
 exp_repeat = config['train']['exp_repeat']
 save_npy = config['experiments']['save_npy']
 criterion = nn.MSELoss()
