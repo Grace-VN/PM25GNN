@@ -487,7 +487,17 @@ def get_model():
             sigma_d=config['experiments'].get('gru_sigma_d', 300.0),
             sigma_h=config['experiments'].get('gru_sigma_h', 1750.0),
             sigma_tau_init_h=config['experiments'].get('gru_sigma_tau_init_h', 2.5),
-            dt_hours=config['experiments'].get('gru_dt_hours', 3.0),
+            # AirLapse's advection-diffusion timing (lag-matching Gaussian,
+            # Green's-function transport estimate) treats each history step
+            # as dt_hours real hours elapsed - it MUST match the active
+            # dataset's actual step spacing (config's freq_hours; 3 for
+            # KnowAir 1-3, 1 for dataset 4's hourly sensor network) or every
+            # timing computation is silently off by that ratio. Falls back
+            # to _ds_cfg's freq_hours (itself defaulting to 3, matching
+            # KnowAir) rather than a bare 3.0, so this stays correct for any
+            # dataset_num - not just the ones known about when this default
+            # was tuned - unless gru_dt_hours is set explicitly to override.
+            dt_hours=config['experiments'].get('gru_dt_hours', _ds_cfg.get('freq_hours', 3.0)),
             diffusivity_km2_per_hour_init=config['experiments'].get('gru_diffusivity_km2_per_hour_init', 50.0),
             t_eps_hours=config['experiments'].get('gru_t_eps_hours', 0.25),
         )
