@@ -18,29 +18,30 @@ experiments:
 # numbering/year here is reference only, not a literal config value.
 # PM25_GNN_nosub/GC_LSTM/nodesFC_GRU are deliberately left unnumbered
 # (PM25_GNN ablation/baseline-suite siblings, not separately ranked) -
-# numbering below runs 1-19 across the rest.
-#   1. MLP 1986
-#   2. LSTM 1997
-#   3. GRU 2014
-#   4. AGCRN 2020
-#   5. MegaCRN 2023
-#   6. Informer 2021
-#   7. Autoformer 2021
-#   8. PatchTST 2023
-#   9. STAEformer 2023
-#  10. MGSFformer 2025
-#  11. TimeXer 2024
-#  12. WPMixer 2025
-#  13. DTAF 2026
-#  14. PM25_GNN 2020
+# numbering below runs 1-20 across the rest.
+#   1. MLP 1986 d e
+#   2. LSTM 1997 d e
+#   3. GRU 2014 d e
+#   4. AGCRN 2020 d e
+#   5. MegaCRN 2023 d e
+#   6. Informer 2021 d e
+#   7. Autoformer 2021 d
+#   8. PatchTST 2023 d
+#   9. STAEformer 2023 d e
+#  10. MGSFformer 2025 d e
+#  11. TimeXer 2024 d
+#  12. WPMixer 2025 d e
+#  13. DTAF 2026 d e
+#  14. PM25_GNN 2020 d e
 #      PM25_GNN_nosub 2020
 #      GC_LSTM 2020
 #      nodesFC_GRU 2020
-#  15. AirDDE 2026
-#  16. AirPhyNet 2024
-#  17. AirDualODE 2025
-#  18. AirFormer 2023
-#  19. AirLapse 2026
+#  15. AirDDE 2026 d e
+#  16. AirPhyNet 2024 d
+#  17. AirDualODE 2025 d e
+#  18. AirFormer 2023 d e
+#  19. AirLapse 2026 d
+#  20. AirLapseV2 2026
 
 train:
   batch_size: 32

@@ -22,6 +22,7 @@ from model.airdde import AirDDEPM25
 from model.airphynet import AirPhyNetPM25
 from model.airdualode import AirDualODEPM25
 from model.airlapse import AirLapse
+from model.airlapse_v2 import AirLapseV2
 from model.mgsfformer import MGSFformerPM25
 from model.timexer import TimeXerPM25
 from model.wpmixer import WPMixerPM25
@@ -56,7 +57,7 @@ except ImportError:
 # on model selection/dispatch (that's still the plain exp_model string).
 # PM25_GNN_nosub/GC_LSTM/nodesFC_GRU are deliberately unnumbered (order
 # None - PM25_GNN ablation/baseline-suite siblings, not separately
-# ranked); numbering runs 1-19 across the rest.
+# ranked); numbering runs 1-20 across the rest.
 MODEL_CATALOG = {
     'MLP': (1, 1986), 'LSTM': (2, 1997), 'GRU': (3, 2014),
     'AGCRN': (4, 2020), 'MegaCRN': (5, 2023),
@@ -68,6 +69,7 @@ MODEL_CATALOG = {
     'AirDDE': (15, 2026), 'AirPhyNet': (16, 2024), 'AirDualODE': (17, 2025),
     'AirFormer': (18, 2023),
     'AirLapse': (19, 2026),
+    'AirLapseV2': (20, 2026),
 }
 
 
@@ -500,6 +502,43 @@ def get_model():
             dt_hours=config['experiments'].get('gru_dt_hours', _ds_cfg.get('freq_hours', 3.0)),
             diffusivity_km2_per_hour_init=config['experiments'].get('gru_diffusivity_km2_per_hour_init', 50.0),
             t_eps_hours=config['experiments'].get('gru_t_eps_hours', 0.25),
+        )
+    elif exp_model == 'AirLapseV2':
+        # Own airlapsev2_* prefix throughout (not gru_*) even though most
+        # of these mirror AirLapse V1's own defaults 1:1 - keeps a future
+        # Optuna search over one from ever silently perturbing the other,
+        # matching every other benchmark model's own-prefix convention
+        # here (airdde_*, airphynet_*, ...). Only diff_hidden_dim/
+        # diffusivity_along_init/diffusivity_cross_init are genuinely new
+        # (AdaptivePhysicsTransport2D's context-adaptive diffusivity MLP -
+        # see model/airlapse_v2.py's module docstring for why).
+        return AirLapseV2(
+            hist_len, pred_len, in_dim, city_num, batch_size, device,
+            graph.edge_index, graph.edge_attr, wind_mean, wind_std,
+            station_coords=coords,
+            station_elevation=altitude,
+            feature_mean=train_data.feature_mean,
+            feature_std=train_data.feature_std,
+            hidden_dim=config['experiments'].get('airlapsev2_hidden_dim', 64),
+            latent_dim=config['experiments'].get('airlapsev2_latent_dim', 8),
+            attn_dim=config['experiments'].get('airlapsev2_attn_dim', 32),
+            num_layers=config['experiments'].get('airlapsev2_num_layers', 1),
+            dropout=config['experiments'].get('airlapsev2_dropout', 0.25),
+            logvar_clamp=config['experiments'].get('airlapsev2_logvar_clamp', 10.0),
+            spatial_mix_mode=config['experiments'].get('airlapsev2_spatial_mix_mode', 'per_step'),
+            max_lag=config['experiments'].get('airlapsev2_max_lag', 10),
+            dist_threshold_km=config['experiments'].get('airlapsev2_dist_threshold_km', 375.0),
+            sigma_d=config['experiments'].get('airlapsev2_sigma_d', 300.0),
+            sigma_h=config['experiments'].get('airlapsev2_sigma_h', 1750.0),
+            sigma_tau_init_h=config['experiments'].get('airlapsev2_sigma_tau_init_h', 2.5),
+            # Same freq_hours-aware default as AirLapse V1 (see its branch
+            # above) - avoids reintroducing the same 3-hour-cadence-
+            # assumed-everywhere bug for V2 from day one.
+            dt_hours=config['experiments'].get('airlapsev2_dt_hours', _ds_cfg.get('freq_hours', 3.0)),
+            diff_hidden_dim=config['experiments'].get('airlapsev2_diff_hidden_dim', 16),
+            diffusivity_along_init=config['experiments'].get('airlapsev2_diffusivity_along_init', 50.0),
+            diffusivity_cross_init=config['experiments'].get('airlapsev2_diffusivity_cross_init', 20.0),
+            t_eps_hours=config['experiments'].get('airlapsev2_t_eps_hours', 0.25),
         )
     else:
         raise Exception('Wrong model name!')
