@@ -273,10 +273,34 @@ class AdaptivePhysicsTransport2D(nn.Module):
 
         w_transport = self.transport_mask.to(green.dtype).view(1, 1, N, N) * green
 
+        # pm25_lag is clamped here, not upstream: it's z-scored PM2.5, and
+        # this dataset's tail is extreme (one reading in the training
+        # window sits at 82 std devs above the mean - real wildfire-smoke
+        # spikes, not a data bug - see prepare_sensor_dataset.py). pi sums
+        # to 1 over k, so transport_from_source alone can't exceed this
+        # clamp regardless of how peaked pi gets - but transported then
+        # sums ADDITIVELY across every neighbor (deliberately, per this
+        # class's superposition argument - see file/class docstring), so
+        # a smoke event hitting several neighboring sensors at once could
+        # still add their clamped contributions into a large-but-bounded
+        # value, rather than the unbounded one this fixes: an un-clamped
+        # 50-epoch/5-repeat run on dataset 4 diverged on several repeats
+        # (train_loss mean 44, std 72 - a handful of exploding runs, not
+        # steady learning) traced to exactly this path. V1
+        # (MultiLagPhysicsAwareSpatialAttention in model/airlapse.py) has
+        # the same unclamped einsum and is likely exposed to a milder
+        # version of this on this dataset too - not fixed here since V1's
+        # own results are comparatively stable and this file's scope is
+        # V2, but worth the same fix if V1 is revisited.
+        pm25_lag_clamped = pm25_lag.clamp(-10.0, 10.0)
         pi = w_transport / (w_transport.sum(dim=1, keepdim=True) + 1e-8)  # sums to 1 over k
-        transport_from_source = torch.einsum('bkij,bkj->bij', pi, pm25_lag)  # [B, N_receiver, N_source]
+        transport_from_source = torch.einsum('bkij,bkj->bij', pi, pm25_lag_clamped)  # [B, N_receiver, N_source]
         reach = w_transport.max(dim=1).values                             # [B, N_receiver, N_source]
         transported = (reach * transport_from_source).sum(dim=-1)         # [B, N_receiver]
+        # Hard backstop on the aggregated, additive-across-neighbors
+        # result too - belt-and-suspenders given how much is riding on
+        # this one number reaching mix_gate sanely.
+        transported = transported.clamp(-20.0, 20.0)
 
         return context, transported
 

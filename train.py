@@ -525,7 +525,20 @@ def get_model():
             num_layers=config['experiments'].get('airlapsev2_num_layers', 1),
             dropout=config['experiments'].get('airlapsev2_dropout', 0.25),
             logvar_clamp=config['experiments'].get('airlapsev2_logvar_clamp', 10.0),
-            spatial_mix_mode=config['experiments'].get('airlapsev2_spatial_mix_mode', 'per_step'),
+            # 'bottleneck' (not 'per_step', unlike V1's Optuna-tuned
+            # default): 'per_step' recomputes the transport estimate at
+            # every one of hist_len sequential encoder steps, so one bad
+            # step's estimate feeds forward into every later step through
+            # the GRUCell's hidden state - real risk given the context-
+            # adaptive Green's function is less uniformly smoothed across
+            # training than V1's single static diffusivity (see the
+            # transport-clamping comments in model/airlapse_v2.py's
+            # forward() for the concrete instability this was chasing).
+            # 'bottleneck' computes it once per forward pass instead.
+            # V1's 'per_step' choice was itself a tuned result, not a
+            # structural requirement - V2 has had no such tuning pass yet,
+            # so start from the more conservative option until it does.
+            spatial_mix_mode=config['experiments'].get('airlapsev2_spatial_mix_mode', 'bottleneck'),
             max_lag=config['experiments'].get('airlapsev2_max_lag', 10),
             dist_threshold_km=config['experiments'].get('airlapsev2_dist_threshold_km', 375.0),
             sigma_d=config['experiments'].get('airlapsev2_sigma_d', 300.0),
