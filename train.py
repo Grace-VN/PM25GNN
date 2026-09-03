@@ -519,41 +519,50 @@ def get_model():
             station_elevation=altitude,
             feature_mean=train_data.feature_mean,
             feature_std=train_data.feature_std,
+            # Defaults below reverted to AirLapse V1's own tuned values
+            # (see its branch above), not V2's own Optuna search result -
+            # that search (tune_airlapse_v2.py) showed only negligible
+            # improvement over untuned defaults, not enough to justify
+            # keeping a divergent, V2-specific set of values over the ones
+            # already validated for V1. Every value is still overridable
+            # via its airlapsev2_* config.yaml key.
             hidden_dim=config['experiments'].get('airlapsev2_hidden_dim', 64),
-            latent_dim=config['experiments'].get('airlapsev2_latent_dim', 32),
-            attn_dim=config['experiments'].get('airlapsev2_attn_dim', 48),
-            num_layers=config['experiments'].get('airlapsev2_num_layers', 2),
-            dropout=config['experiments'].get('airlapsev2_dropout', 0.05),
+            latent_dim=config['experiments'].get('airlapsev2_latent_dim', 8),
+            attn_dim=config['experiments'].get('airlapsev2_attn_dim', 32),
+            num_layers=config['experiments'].get('airlapsev2_num_layers', 1),
+            dropout=config['experiments'].get('airlapsev2_dropout', 0.25),
             # No logvar_clamp here (unlike V1's branch above): AirLapseV2
             # dropped the VAE stochastic latent entirely - negligible
             # improvement from tuning didn't justify the added training
             # noise/KL loss (see model/airlapse_v2.py's docstrings).
-            # 'bottleneck' (not 'per_step', unlike V1's Optuna-tuned
-            # default): 'per_step' recomputes the transport estimate at
-            # every one of hist_len sequential encoder steps, so one bad
-            # step's estimate feeds forward into every later step through
-            # the GRUCell's hidden state - real risk given the context-
-            # adaptive Green's function is less uniformly smoothed across
-            # training than V1's single static diffusivity (see the
-            # transport-clamping comments in model/airlapse_v2.py's
-            # forward() for the concrete instability this was chasing).
-            # 'bottleneck' computes it once per forward pass instead.
-            # V1's 'per_step' choice was itself a tuned result, not a
-            # structural requirement - V2 has had no such tuning pass yet,
-            # so start from the more conservative option until it does.
-            spatial_mix_mode=config['experiments'].get('airlapsev2_spatial_mix_mode', 'bottleneck'),
-            max_lag=config['experiments'].get('airlapsev2_max_lag', 4),
-            dist_threshold_km=config['experiments'].get('airlapsev2_dist_threshold_km', 345.0),
+            # 'per_step' (V1's own value) - NB: this is the mode that was
+            # implicated in AirLapseV2's earlier training divergence (see
+            # the transport/pm25_lag clamps added in model/airlapse_v2.py's
+            # forward() for that fix). Those clamps should make 'per_step'
+            # safe again since they bound the exact quantity that blew up,
+            # but this hasn't been re-verified at the full 50-epoch/
+            # 5-repeat budget with 'per_step' specifically - watch for the
+            # same symptom (train_loss mean/std both large, several
+            # repeats far worse than the others) if it recurs, and fall
+            # back to 'bottleneck' via airlapsev2_spatial_mix_mode if so.
+            spatial_mix_mode=config['experiments'].get('airlapsev2_spatial_mix_mode', 'per_step'),
+            max_lag=config['experiments'].get('airlapsev2_max_lag', 10),
+            dist_threshold_km=config['experiments'].get('airlapsev2_dist_threshold_km', 375.0),
             sigma_d=config['experiments'].get('airlapsev2_sigma_d', 300.0),
-            sigma_h=config['experiments'].get('airlapsev2_sigma_h', 1200.0),
-            sigma_tau_init_h=config['experiments'].get('airlapsev2_sigma_tau_init_h', 1.9),
+            sigma_h=config['experiments'].get('airlapsev2_sigma_h', 1750.0),
+            sigma_tau_init_h=config['experiments'].get('airlapsev2_sigma_tau_init_h', 2.5),
             # Same freq_hours-aware default as AirLapse V1 (see its branch
             # above) - avoids reintroducing the same 3-hour-cadence-
             # assumed-everywhere bug for V2 from day one.
             dt_hours=config['experiments'].get('airlapsev2_dt_hours', _ds_cfg.get('freq_hours', 3.0)),
             diff_hidden_dim=config['experiments'].get('airlapsev2_diff_hidden_dim', 16),
-            diffusivity_along_init=config['experiments'].get('airlapsev2_diffusivity_along_init', 140.0),
-            diffusivity_cross_init=config['experiments'].get('airlapsev2_diffusivity_cross_init', 80.0),
+            # V1 has one isotropic diffusivity_km2_per_hour_init (50.0) -
+            # no along/cross split to revert to, so both start at that
+            # same value (a temporarily-isotropic starting point) rather
+            # than either V2's own original asymmetric default (50/20) or
+            # the tuned one (140/80).
+            diffusivity_along_init=config['experiments'].get('airlapsev2_diffusivity_along_init', 50.0),
+            diffusivity_cross_init=config['experiments'].get('airlapsev2_diffusivity_cross_init', 50.0),
             t_eps_hours=config['experiments'].get('airlapsev2_t_eps_hours', 0.25),
         )
     else:
