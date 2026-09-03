@@ -157,3 +157,11 @@ data/data.csv
 
 # Editor-specific settings (machine-local paths, not meant to be shared)
 .vscode/
+
+# Not part of this repo's own work - a large local results-archive
+# download and a personal citation-manager file that both got swept into
+# a commit once via an IDE "stage all" action. ref/ is a personal
+# reference folder, not something this project publishes; the zip is a
+# ~845MB download that GitHub's 100MB per-file limit would reject anyway.
+/3-20260830T050539Z-1-001.zip
+/ref/

@@ -520,10 +520,10 @@ def get_model():
             feature_mean=train_data.feature_mean,
             feature_std=train_data.feature_std,
             hidden_dim=config['experiments'].get('airlapsev2_hidden_dim', 64),
-            latent_dim=config['experiments'].get('airlapsev2_latent_dim', 8),
-            attn_dim=config['experiments'].get('airlapsev2_attn_dim', 32),
-            num_layers=config['experiments'].get('airlapsev2_num_layers', 1),
-            dropout=config['experiments'].get('airlapsev2_dropout', 0.25),
+            latent_dim=config['experiments'].get('airlapsev2_latent_dim', 32),
+            attn_dim=config['experiments'].get('airlapsev2_attn_dim', 48),
+            num_layers=config['experiments'].get('airlapsev2_num_layers', 2),
+            dropout=config['experiments'].get('airlapsev2_dropout', 0.05),
             logvar_clamp=config['experiments'].get('airlapsev2_logvar_clamp', 10.0),
             # 'bottleneck' (not 'per_step', unlike V1's Optuna-tuned
             # default): 'per_step' recomputes the transport estimate at
@@ -539,18 +539,18 @@ def get_model():
             # structural requirement - V2 has had no such tuning pass yet,
             # so start from the more conservative option until it does.
             spatial_mix_mode=config['experiments'].get('airlapsev2_spatial_mix_mode', 'bottleneck'),
-            max_lag=config['experiments'].get('airlapsev2_max_lag', 10),
-            dist_threshold_km=config['experiments'].get('airlapsev2_dist_threshold_km', 375.0),
+            max_lag=config['experiments'].get('airlapsev2_max_lag', 4),
+            dist_threshold_km=config['experiments'].get('airlapsev2_dist_threshold_km', 345.0),
             sigma_d=config['experiments'].get('airlapsev2_sigma_d', 300.0),
-            sigma_h=config['experiments'].get('airlapsev2_sigma_h', 1750.0),
-            sigma_tau_init_h=config['experiments'].get('airlapsev2_sigma_tau_init_h', 2.5),
+            sigma_h=config['experiments'].get('airlapsev2_sigma_h', 1200.0),
+            sigma_tau_init_h=config['experiments'].get('airlapsev2_sigma_tau_init_h', 1.9),
             # Same freq_hours-aware default as AirLapse V1 (see its branch
             # above) - avoids reintroducing the same 3-hour-cadence-
             # assumed-everywhere bug for V2 from day one.
             dt_hours=config['experiments'].get('airlapsev2_dt_hours', _ds_cfg.get('freq_hours', 3.0)),
             diff_hidden_dim=config['experiments'].get('airlapsev2_diff_hidden_dim', 16),
-            diffusivity_along_init=config['experiments'].get('airlapsev2_diffusivity_along_init', 50.0),
-            diffusivity_cross_init=config['experiments'].get('airlapsev2_diffusivity_cross_init', 20.0),
+            diffusivity_along_init=config['experiments'].get('airlapsev2_diffusivity_along_init', 140.0),
+            diffusivity_cross_init=config['experiments'].get('airlapsev2_diffusivity_cross_init', 80.0),
             t_eps_hours=config['experiments'].get('airlapsev2_t_eps_hours', 0.25),
         )
     else:
