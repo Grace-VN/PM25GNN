@@ -581,6 +581,12 @@ def get_model():
             diffusivity_along_init=config['experiments'].get('airlapsev2_diffusivity_along_init', 50.0),
             diffusivity_cross_init=config['experiments'].get('airlapsev2_diffusivity_cross_init', 50.0),
             t_eps_hours=config['experiments'].get('airlapsev2_t_eps_hours', 0.25),
+            # "Option B" joint spatio-temporal encoder (see
+            # TemporalGraphEncoder's docstring in model/airlapse_v2.py) -
+            # only takes effect in 'bottleneck' mode. 1 layer by default;
+            # 0 disables it for an apples-to-apples ablation against the
+            # per-node-independent encoding this file used before.
+            st_encoder_layers=config['experiments'].get('airlapsev2_st_encoder_layers', 1),
         )
     else:
         raise Exception('Wrong model name!')

@@ -51,6 +51,20 @@ something close to V1's own defaults (isotropic ~50 km^2/hour) rather
 than an arbitrary random starting point - see AdaptivePhysicsTransport2D.
 __init__'s bias initialization.
 
+3. Joint spatio-temporal encoding ("Option B", added after the two
+   upgrades above), via TemporalGraphEncoder. Independent of everything
+   above - it changes how each station's hidden states are FORMED before
+   AdaptivePhysicsTransport2D ever sees them, not the transport Green's
+   function itself. The base per-node GRU encoder has zero cross-station
+   interaction while encoding (x folds N into the batch dimension), so
+   "two neighbors rising together" or "a front moving through several
+   stations" can only ever be inferred after the fact, by comparing two
+   independently-finished summaries in the attention step. This module
+   lets stations exchange information at every timestep WHILE their
+   temporal trajectories are still forming instead - see its own
+   docstring for the exact mechanism and why it's a single shared graph-
+   attention layer rather than a full STAEformer/TCN-style stack.
+
 The GRU encoder/decoder, the learned content+physics attention and its
 four independent bonus terms, and the mix_gate that combines context/
 transported/h_grid are otherwise unchanged from AirLapse (model/
@@ -313,6 +327,103 @@ class AdaptivePhysicsTransport2D(nn.Module):
         return context, transported
 
 
+class TemporalGraphEncoder(nn.Module):
+    """
+    "Option B" joint spatio-temporal encoder (in the terminology of the
+    conversation that requested this): AirLapseV2's base 'bottleneck'
+    encoder is a single per-node nn.GRU - x is folded to (B*N, T, C)
+    before the GRU ever sees it, so no station's hidden state is
+    influenced by any other station's history WHILE it's being formed.
+    Cross-station information only enters once, in the single attention
+    pass AdaptivePhysicsTransport2D does afterward, over each station's
+    already-independently-compressed trajectory. That means the model
+    structurally cannot represent "two neighbors rising together over
+    the past few hours" or "a front visibly moving through several
+    upstream stations" as a feature of the encoding itself - only as
+    something inferred post-hoc from comparing two finished summaries.
+
+    This module closes that gap with the lightest change that actually
+    lets stations interact WHILE their temporal trajectories are still
+    forming, not after: run the per-node GRU as before, then apply ONE
+    graph-attention layer PER TIMESTEP (weight-shared across all T - the
+    physical neighbor structure doesn't change from hour to hour, so
+    there's no reason to learn a separate mixing function per timestep)
+    with a residual + LayerNorm, before any lag is sliced out for the
+    downstream physics-guided attention. Every h_lag entry
+    AdaptivePhysicsTransport2D reads is now itself already
+    spatially-aware, so "two neighbors rising together" is representable
+    directly in the embeddings it attends over, not just inferable from
+    comparing two independently-formed ones afterward.
+
+    Deliberately NOT a full STAEformer/TCN-style stack (the other options
+    raised in that conversation): with ~240 training windows on dataset
+    4, minimizing added parameters matters more than expressiveness -
+    one shared graph-attention layer adds roughly as many parameters as
+    AdaptivePhysicsTransport2D's own q/k/v projections, not a second
+    full model. num_layers lets you stack more if a dataset has enough
+    data to support it; num_layers=1 is deliberately the default.
+
+    Reuses the SAME distance-decay neighbor definition (dist_threshold_km,
+    sigma_d, station_coords) as AdaptivePhysicsTransport2D, computed
+    independently here rather than shared, so "neighbor" means the same
+    physical thing everywhere in this model without coupling the two
+    modules' internals together.
+
+    This only ever touches the 'bottleneck' encoder path. 'per_step'
+    already interleaves spatial mixing into every encoder step (calling
+    AdaptivePhysicsTransport2D itself once per timestep, feeding the
+    result back into the next GRUCell step) - stacking this module on
+    top of that would double up on the same idea via two different
+    mechanisms at once, and 'per_step' has empirically been the less
+    stable, worse-scoring mode on dataset 4 throughout this repo's
+    history, so it isn't a promising place to add more spatial mixing
+    right now regardless.
+    """
+    def __init__(self, hidden_dim, station_coords, attn_dim=32,
+                 dist_threshold_km=300.0, sigma_d=200.0, num_layers=1, dropout=0.1):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+
+        dist = haversine_km(station_coords)
+        neighbor_mask = dist <= dist_threshold_km
+        self.register_buffer('neighbor_mask', neighbor_mask)
+        dist_bias = torch.exp(-dist / sigma_d)
+        self.register_buffer('dist_bias', dist_bias)
+
+        self.layers = nn.ModuleList([
+            nn.ModuleDict({
+                'q_proj': nn.Linear(hidden_dim, attn_dim, bias=False),
+                'k_proj': nn.Linear(hidden_dim, attn_dim, bias=False),
+                'v_proj': nn.Linear(hidden_dim, hidden_dim, bias=False),
+                'norm': nn.LayerNorm(hidden_dim),
+            })
+            for _ in range(num_layers)
+        ])
+        self.scale = attn_dim ** -0.5
+        self.w_dist = nn.Parameter(torch.ones(num_layers))
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, output, B, N):
+        """output: [B*N, T, hidden_dim] (a 'bottleneck'-mode GRU's raw
+        output) -> same shape, now spatially mixed at every timestep."""
+        T = output.shape[1]
+        h = output.reshape(B, N, T, self.hidden_dim)
+        for i, layer in enumerate(self.layers):
+            # fold (B, T) into one batch axis - the same neighbor
+            # structure/weights apply at every timestep, so this is one
+            # batched attention call over all timesteps at once, not a
+            # loop over T.
+            h_bt = h.permute(0, 2, 1, 3).reshape(B * T, N, self.hidden_dim)
+            q, k, v = layer['q_proj'](h_bt), layer['k_proj'](h_bt), layer['v_proj'](h_bt)
+            score = torch.bmm(q, k.transpose(1, 2)) * self.scale + self.w_dist[i] * self.dist_bias.unsqueeze(0)
+            score = score.masked_fill(~self.neighbor_mask.unsqueeze(0), float('-inf'))
+            weights = torch.nan_to_num(torch.softmax(score, dim=-1), nan=0.0)
+            mixed = self.dropout(torch.bmm(weights, v))
+            mixed = mixed.reshape(B, T, N, self.hidden_dim).permute(0, 2, 1, 3)
+            h = layer['norm'](h + mixed)
+        return h.reshape(B * N, T, self.hidden_dim)
+
+
 class AirLapseV2(nn.Module):
     """
     AirLapse V2 - identical outer architecture to AirLapse (model/
@@ -338,6 +449,14 @@ class AirLapseV2(nn.Module):
 
     spatial_mix_mode / max_lag: same meaning as AirLapse V1 - see its
     class docstring.
+
+    st_encoder_layers: if > 0 (default 1) and spatial_mix_mode ==
+    'bottleneck', a TemporalGraphEncoder (see above - "Option B", joint
+    spatio-temporal encoding) is inserted right after the GRU, before any
+    lag is sliced out for the physics-guided attention. 0 disables it,
+    recovering the original per-node-independent encoding exactly (for
+    ablating whether it actually helps). No effect in 'per_step' mode -
+    see TemporalGraphEncoder's docstring for why.
     """
     def __init__(self, hist_len, pred_len, in_dim, city_num, batch_size, device,
                  edge_index, edge_attr, wind_mean, wind_std,
@@ -349,7 +468,8 @@ class AirLapseV2(nn.Module):
                  dist_threshold_km=300.0, sigma_d=200.0, sigma_h=1200.0,
                  sigma_tau_init_h=3.0, dt_hours=3.0,
                  diff_hidden_dim=16, diffusivity_along_init=50.0,
-                 diffusivity_cross_init=20.0, t_eps_hours=0.25):
+                 diffusivity_cross_init=20.0, t_eps_hours=0.25,
+                 st_encoder_layers=1):
         super(AirLapseV2, self).__init__()
         assert spatial_mix_mode in ('bottleneck', 'per_step'), \
             f"spatial_mix_mode must be 'bottleneck' or 'per_step', got {spatial_mix_mode}"
@@ -398,6 +518,16 @@ class AirLapseV2(nn.Module):
                 input_size=in_dim, hidden_size=hidden_dim, num_layers=num_layers,
                 batch_first=True, dropout=dropout if num_layers > 1 else 0.0,
             )
+            # "Option B" - see TemporalGraphEncoder's docstring. None (not
+            # just an empty ModuleList) when disabled, so _encode_bottleneck
+            # can check `is not None` and skip it entirely - not just run
+            # a zero-layer pass that reduces to a no-op anyway, but this
+            # is clearer about "disabled" being a real, intentional state.
+            self.st_encoder = TemporalGraphEncoder(
+                hidden_dim=hidden_dim, station_coords=station_coords,
+                attn_dim=attn_dim, dist_threshold_km=dist_threshold_km,
+                sigma_d=sigma_d, num_layers=st_encoder_layers, dropout=dropout,
+            ) if st_encoder_layers > 0 else None
         else:  # 'per_step'
             self.encoder_cell = nn.GRUCell(input_size=in_dim, hidden_size=hidden_dim)
             self.step_dropout = nn.Dropout(dropout)
@@ -449,11 +579,19 @@ class AirLapseV2(nn.Module):
         return travel_bearing, speed_kmh, hour
 
     def _encode_bottleneck(self, x, feature_hist, B, N):
-        """Fused GRU; the last max_lag steps' hidden states become the
-        spatial attention's keys/values (and pm25_lag its transport
-        estimate's source values), each scored with its own wind."""
+        """Fused GRU (optionally followed by TemporalGraphEncoder's
+        "Option B" spatial mixing - see its docstring); the last max_lag
+        steps' hidden states become the spatial attention's keys/values
+        (and pm25_lag its transport estimate's source values), each
+        scored with its own wind."""
         output, h_n = self.encoder(x)                          # output: [B*N, T, hidden_dim]
-        h_T = h_n[-1]
+        if self.st_encoder is not None:
+            output = self.st_encoder(output, B, N)              # same shape, now spatially-aware
+            h_T = output[:, -1, :]                              # h_n[-1] would be pre-mixing - use the
+                                                                 # mixed "now" state instead, consistent
+                                                                 # with h_lag below.
+        else:
+            h_T = h_n[-1]
         h_grid = h_T.reshape(B, N, self.hidden_dim)
 
         T = output.shape[1]
