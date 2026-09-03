@@ -524,7 +524,10 @@ def get_model():
             attn_dim=config['experiments'].get('airlapsev2_attn_dim', 48),
             num_layers=config['experiments'].get('airlapsev2_num_layers', 2),
             dropout=config['experiments'].get('airlapsev2_dropout', 0.05),
-            logvar_clamp=config['experiments'].get('airlapsev2_logvar_clamp', 10.0),
+            # No logvar_clamp here (unlike V1's branch above): AirLapseV2
+            # dropped the VAE stochastic latent entirely - negligible
+            # improvement from tuning didn't justify the added training
+            # noise/KL loss (see model/airlapse_v2.py's docstrings).
             # 'bottleneck' (not 'per_step', unlike V1's Optuna-tuned
             # default): 'per_step' recomputes the transport estimate at
             # every one of hist_len sequential encoder steps, so one bad

@@ -51,10 +51,18 @@ something close to V1's own defaults (isotropic ~50 km^2/hour) rather
 than an arbitrary random starting point - see AdaptivePhysicsTransport2D.
 __init__'s bias initialization.
 
-Everything else - the GRU encoder/decoder, the VAE latent bottleneck, the
-learned content+physics attention and its four independent bonus terms,
-the mix_gate that combines context/transported/h_grid - is unchanged
-from AirLapse (model/airlapse.py), copied here rather than subclassed so
+The GRU encoder/decoder, the learned content+physics attention and its
+four independent bonus terms, and the mix_gate that combines context/
+transported/h_grid are otherwise unchanged from AirLapse (model/
+airlapse.py). One further difference from V1, unrelated to the transport
+Green's function above: the latent bottleneck here is a single
+deterministic Linear projection, not a VAE (no mu/logvar heads,
+reparameterization sampling, or KL loss) - an Optuna search over V2's
+own hyperparameters (tune_airlapse_v2.py) showed negligible improvement
+over untuned defaults, not enough signal to justify the added training
+noise and loss term the stochastic version costs for no measured
+benefit here (see AirLapseV2's class docstring for the fuller reasoning).
+This file is copied from AirLapse rather than subclassing it, so
 V1 and V2 can be tuned/compared independently without one's changes
 silently affecting the other.
 """
@@ -308,11 +316,25 @@ class AdaptivePhysicsTransport2D(nn.Module):
 class AirLapseV2(nn.Module):
     """
     AirLapse V2 - identical outer architecture to AirLapse (model/
-    airlapse.py: VAE-style, per-station-independent GRU forecaster) with
-    its spatial mixing step swapped for AdaptivePhysicsTransport2D above
-    (2-D anisotropic + context-adaptive diffusivity transport estimate,
-    same learned content+physics attention otherwise). See this file's
-    module docstring for the motivation and exact formulation.
+    airlapse.py: per-station-independent GRU forecaster) with its spatial
+    mixing step swapped for AdaptivePhysicsTransport2D above (2-D
+    anisotropic + context-adaptive diffusivity transport estimate, same
+    learned content+physics attention otherwise). See this file's module
+    docstring for the motivation and exact formulation.
+
+    Unlike AirLapse V1, this is NOT a VAE: V1's stochastic latent (mu/
+    logvar heads, reparameterization sampling, KL-divergence loss) was
+    dropped after an Optuna search over V2's own hyperparameters (see
+    tune_airlapse_v2.py) showed negligible improvement over the untuned
+    defaults - not enough signal to justify keeping VAE-style uncertainty
+    machinery that adds training noise and an extra loss term for no
+    measured benefit on this dataset. `z` here is a single deterministic
+    Linear projection of h_mixed (latent_head) - still a real bottleneck
+    (latent_dim still meaningfully controls its width, still tunable),
+    just without the sampling/regularization on top of it. If evidence
+    later shows the stochasticity would help on a different dataset,
+    re-adding it here is a small, self-contained change (see git history
+    for the removed mu_head/logvar_head/reparameterization/KL code).
 
     spatial_mix_mode / max_lag: same meaning as AirLapse V1 - see its
     class docstring.
@@ -322,7 +344,7 @@ class AirLapseV2(nn.Module):
                  station_coords, station_elevation,
                  feature_mean, feature_std,
                  hidden_dim=64, latent_dim=16, attn_dim=32, num_layers=1,
-                 dropout=0.1, logvar_clamp=10.0,
+                 dropout=0.1,
                  spatial_mix_mode='bottleneck', max_lag=6,
                  dist_threshold_km=300.0, sigma_d=200.0, sigma_h=1200.0,
                  sigma_tau_init_h=3.0, dt_hours=3.0,
@@ -344,7 +366,6 @@ class AirLapseV2(nn.Module):
         self.device = device
         self.hidden_dim = hidden_dim
         self.latent_dim = latent_dim
-        self.logvar_clamp = logvar_clamp
         self.spatial_mix_mode = spatial_mix_mode
         self.dt_hours = dt_hours
         self.max_lag = min(max_lag, hist_len)
@@ -399,15 +420,15 @@ class AirLapseV2(nn.Module):
         # h_grid and the learned attention context.
         self.mix_gate = nn.Linear(hidden_dim * 2 + 1, hidden_dim)
 
-        self.mu_head = nn.Linear(hidden_dim, latent_dim)
-        self.logvar_head = nn.Linear(hidden_dim, latent_dim)
+        # Deterministic bottleneck - see class docstring for why this
+        # isn't a VAE (mu/logvar heads + reparameterization) like V1.
+        self.latent_head = nn.Linear(hidden_dim, latent_dim)
 
         self.decoder_init = nn.Linear(hidden_dim + latent_dim, hidden_dim)
         self.decoder_cell = nn.GRUCell(
             input_size=self.feature_dim + latent_dim, hidden_size=hidden_dim,
         )
         self.output_head = nn.Linear(hidden_dim, 1)
-        self.last_kl_loss = None
 
     def _wind_at_idxs(self, feature_hist, idxs, B, N):
         """De-normalize the dataset's precomputed speed(km/h)/direction(deg,
@@ -509,19 +530,7 @@ class AirLapseV2(nn.Module):
         else:
             h_mixed = self._encode_per_step(x, feature_hist, B, N)
 
-        mu_q = self.mu_head(h_mixed)
-        logvar_q = torch.clamp(self.logvar_head(h_mixed), -self.logvar_clamp, self.logvar_clamp)
-
-        if self.training:
-            eps = torch.randn_like(mu_q)
-            z = mu_q + eps * torch.exp(0.5 * logvar_q)
-        else:
-            z = mu_q
-
-        kl = -0.5 * torch.mean(
-            torch.sum(1 + logvar_q - mu_q.pow(2) - logvar_q.exp(), dim=-1)
-        )
-        self.last_kl_loss = kl
+        z = self.latent_head(h_mixed)
 
         h_dec = self.decoder_init(torch.cat([h_mixed, z], dim=-1))
         preds = []
