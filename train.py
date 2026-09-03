@@ -535,18 +535,35 @@ def get_model():
             # dropped the VAE stochastic latent entirely - negligible
             # improvement from tuning didn't justify the added training
             # noise/KL loss (see model/airlapse_v2.py's docstrings).
-            # 'per_step' (V1's own value) - NB: this is the mode that was
-            # implicated in AirLapseV2's earlier training divergence (see
-            # the transport/pm25_lag clamps added in model/airlapse_v2.py's
-            # forward() for that fix). Those clamps should make 'per_step'
-            # safe again since they bound the exact quantity that blew up,
-            # but this hasn't been re-verified at the full 50-epoch/
-            # 5-repeat budget with 'per_step' specifically - watch for the
-            # same symptom (train_loss mean/std both large, several
-            # repeats far worse than the others) if it recurs, and fall
-            # back to 'bottleneck' via airlapsev2_spatial_mix_mode if so.
-            spatial_mix_mode=config['experiments'].get('airlapsev2_spatial_mix_mode', 'per_step'),
-            max_lag=config['experiments'].get('airlapsev2_max_lag', 10),
+            # Dataset-family-aware, same reasoning as max_lag below:
+            # 'per_step' is V1's own tuned value, but every test of it on
+            # dataset 4 in this repo's history (including a 3-epoch check
+            # right after the max_lag fix below was added) shows the same
+            # "train_loss much larger than val_loss" spike signature that
+            # caused the original divergence - milder since the transport/
+            # pm25_lag clamps in model/airlapse_v2.py's forward() bound the
+            # quantity that blew up, but not gone. 'bottleneck' has been
+            # consistently clean AND scored better (RMSE ~2.94-2.97 at
+            # full/near-full budget) every time it's been tried on this
+            # dataset. Keep 'per_step' for KnowAir, where it's V1's own
+            # validated choice and this instability was never observed.
+            spatial_mix_mode=config['experiments'].get(
+                'airlapsev2_spatial_mix_mode', 'per_step' if _ds_cfg.get('family', 'knowair') == 'knowair' else 'bottleneck'),
+            # Dataset-family-aware, like dt_hours below - NOT just carried
+            # over from V1's tuned 10. EDA (neighbor lag correlation
+            # matched against wind-implied travel time, redone directly on
+            # SensorAir.npy - see the conversation/PR that added this)
+            # found a real, positive wind-conditioned transport signal on
+            # dataset 4's graph, but concentrated in ~1-3 hours and gone by
+            # ~8h - a much shorter useful window than KnowAir's own EDA
+            # table (reports/eda/tables/sec4_5_wind_implied_transport_time.csv)
+            # shows there (positive lift persisting to 21h+), consistent
+            # with this network's much denser station spacing. Separately,
+            # tune_airlapse_v2.py's Optuna search had already found
+            # max_lag=4 as its best value for dataset 4 - two independent
+            # signals pointing the same way.
+            max_lag=config['experiments'].get(
+                'airlapsev2_max_lag', 10 if _ds_cfg.get('family', 'knowair') == 'knowair' else 4),
             dist_threshold_km=config['experiments'].get('airlapsev2_dist_threshold_km', 375.0),
             sigma_d=config['experiments'].get('airlapsev2_sigma_d', 300.0),
             sigma_h=config['experiments'].get('airlapsev2_sigma_h', 1750.0),
