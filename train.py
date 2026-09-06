@@ -587,6 +587,13 @@ def get_model():
             # 0 disables it for an apples-to-apples ablation against the
             # per-node-independent encoding this file used before.
             st_encoder_layers=config['experiments'].get('airlapsev2_st_encoder_layers', 1),
+            # 'softmax_lag' (default) keeps the original, already-tuned
+            # weighted-average-over-lag + peak-reach transport estimate;
+            # 'sum_integral' switches to literal double summation over
+            # (tau, j), dt_hours-scaled - see AdaptivePhysicsTransport2D's
+            # docstring ("TRANSPORT AGGREGATION MODES") for the tradeoff.
+            # Left at the original default until A/B'd on dataset 4.
+            transport_agg=config['experiments'].get('airlapsev2_transport_agg', 'softmax_lag'),
         )
     else:
         raise Exception('Wrong model name!')
