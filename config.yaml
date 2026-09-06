@@ -11,11 +11,6 @@ experiments:
   save_npy: True
   dataset_num: 4
   model: AirLapseV2
-  # Override AirLapseV2's dataset-family-aware default ('bottleneck' for
-  # dataset 4's 'sensor' family - see train.py) to try 'per_step' instead,
-  # on top of the physics-fused attention logits change (see 585cdb0) -
-  # variant for A/B testing against the 'bottleneck' default.
-  airlapsev2_spatial_mix_mode: per_step
 # Available models below, grouped: generic neural network/graph
 # architectures, generic transformers, air-quality-forecasting-domain-
 # specific models, then AirLapse (this repo's proposed model). To switch,
