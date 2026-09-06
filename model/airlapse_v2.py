@@ -65,12 +65,24 @@ __init__'s bias initialization.
    docstring for the exact mechanism and why it's a single shared graph-
    attention layer rather than a full STAEformer/TCN-style stack.
 
-The GRU encoder/decoder, the learned content+physics attention and its
-four independent bonus terms, and the mix_gate that combines context/
-transported/h_grid are otherwise unchanged from AirLapse (model/
-airlapse.py). One further difference from V1, unrelated to the transport
-Green's function above: the latent bottleneck here is a single
-deterministic Linear projection, not a VAE (no mu/logvar heads,
+4. Physics-fused attention logits ("A_final = A_learned + w_phys *
+   log(K+eps)", added after the joint spatio-temporal encoder above).
+   Until this change, the Green's function computed for `transported`
+   was invisible to the softmax that produces `context` - the two were
+   fully independent branches, combined only afterward by mix_gate. Now
+   the same Green's-function value is also injected as one more additive
+   term in the attention score, in log-space, alongside the four
+   hand-crafted bonuses - see AdaptivePhysicsTransport2D's docstring
+   ("PHYSICS-FUSED ATTENTION LOGITS") for the exact formula and
+   reasoning. `transported` itself is unchanged; only how `context` is
+   computed differs.
+
+The GRU encoder/decoder, the mix_gate that combines context/transported/
+h_grid, and (aside from the addition above) the learned content+physics
+attention's four independent bonus terms are otherwise unchanged from
+AirLapse (model/airlapse.py). One further difference from V1, unrelated
+to the transport Green's function above: the latent bottleneck here is a
+single deterministic Linear projection, not a VAE (no mu/logvar heads,
 reparameterization sampling, or KL loss) - an Optuna search over V2's
 own hyperparameters (tune_airlapse_v2.py) showed negligible improvement
 over untuned defaults, not enough signal to justify the added training
@@ -95,8 +107,41 @@ class AdaptivePhysicsTransport2D(nn.Module):
     MultiLagPhysicsAwareSpatialAttention (model/airlapse.py) - same
     learned content+physics attention (`context`), same four independent
     bonus terms (distance/wind/terrain/lag), same additive-across-sources
-    aggregation - EXCEPT for how the explicit physical transport estimate
-    (`transported`) is computed. See this module's file docstring for why.
+    aggregation for the explicit transport estimate - EXCEPT for how the
+    Green's function itself is computed (2-D anisotropic, not 1-D radial;
+    see below) AND one further addition not present in V1 at all:
+    PHYSICS-FUSED ATTENTION LOGITS.
+
+    Physics-fused attention logits. V1 (and V2 before this change) treats
+    the learned attention (`context`) and the explicit physical estimate
+    (`transported`) as fully independent branches, combined only
+    afterward by the caller's mix_gate - the Green's function is computed
+    but never actually seen by the softmax that produces `context`. Here,
+    the same Green's-function value `green` (see formula below) is also
+    injected directly into the attention logits before the softmax:
+        A_final_ijk = A_learned_ijk + w_dist*dist_ij + w_wind*align_ijk
+                      + w_terrain*terrain_ij + w_lag*lagbias_ijk
+                      + w_phys * log(G_ijk + eps)
+    w_phys is a free learnable scalar (init 1.0, same as the other four
+    bonus weights) - it can shrink toward 0 during training if this
+    doesn't earn its keep, exactly like w_dist/w_wind/w_terrain/w_lag.
+    Unlike those four (each a hand-crafted proxy for one physical factor
+    in isolation - static distance decay, instantaneous wind alignment,
+    static terrain difference, a Gaussian arrival-time match), G_ijk is
+    the actual advection-diffusion Green's function already being
+    computed for `transported`: it jointly encodes distance, signed
+    downwind advection, crosswind spread, AND per-source/per-lag
+    context-adaptive diffusivity in one physically-grounded number. Log-
+    space (not raw G_ijk added multiplicatively via softmax) matches the
+    log-linear pooling used elsewhere in this repo's attention variants -
+    a source/lag combination the physics says is implausible (wrong
+    arrival time, wrong side of the plume) gets an extra strongly
+    negative logit contribution, additively stacking with (or overriding)
+    whatever the four hand-crafted bonuses alone would have said, while a
+    plausible one adds close to 0. `transported` itself is UNCHANGED by
+    this - it's still a separate output computed from the same `green`
+    tensor, reaching mix_gate side by side with `context` exactly as
+    before; only the attention logits that produce `context` are new.
 
     2-D anisotropic Green's function. For source j, receiver i, lag k
     (elapsed time t_k, floored at t_eps_hours):
@@ -114,11 +159,35 @@ class AdaptivePhysicsTransport2D(nn.Module):
     This is the direct 2-D generalization of V1's 1-D form (which is
     recovered exactly if y_ijk is dropped and D_along=D_cross): two
     independent Gaussians along orthogonal axes, one advecting with the
-    wind, one purely diffusing sideways. Whatever aggregation V1 did with
-    its `green` values (per-lag normalization to pi_ijk, "reach" as the
-    per-source peak weight, additive summation across sources - see V1's
-    docstring for why additive, not softmax-normalized) is unchanged
-    here; only the Green's function itself differs.
+    wind, one purely diffusing sideways. V1's additive-across-sources
+    aggregation (see V1's docstring for why additive, not softmax-
+    normalized) still applies to whichever transport_agg mode is active
+    below - only the Green's function itself differs from V1.
+
+    TRANSPORT AGGREGATION MODES (transport_agg, default 'softmax_lag').
+    Controls how `green` is reduced over the lag axis tau to produce
+    `transported`, independently of everything else in this class:
+      - 'softmax_lag' (V2's original behavior): normalizes `green` to
+        pi_ijk = green_ijk / sum_tau(green_ijk) - a WEIGHTED AVERAGE of
+        historical concentration over tau, not a sum - then scales by
+        reach_ij = max_tau(green_ijk), the single most-plausible lag's
+        peak weight, before summing additively over sources j. This
+        conflates "how strongly could j reach i at all" (reach) with
+        "which historical value best represents what's arriving now"
+        (pi), rather than letting each lag's contribution coexist and
+        add up on its own terms.
+      - 'sum_integral': literal double summation over BOTH tau and j -
+        true linear-PDE superposition on the time axis as well as the
+        space axis - scaled by dt_hours to approximate the continuous
+        convolution integral C_i(t) = sum_j INTEGRAL K_ij(tau) P_j(t-tau)
+        dtau (only tau, a sampled continuous axis, gets the dtau scale
+        factor; j is a fixed finite set of real sensors, not something
+        to integrate over). See forward()'s inline comments for the
+        exact formula and, importantly, the numerical-stability tradeoff
+        of removing the pi normalization that 'softmax_lag' relies on.
+    Both modes reuse the same masked `green` tensor and the same final
+    hard clamp; only the reduction over tau (and whether reach/pi are
+    computed at all) differs.
 
     Context-adaptive diffusivity. context_jk = [wind_speed_kmh_jk / 10,
     sin(hour_jk), cos(hour_jk), elevation_j / 1000 (km), pm25_jk (already
@@ -139,8 +208,11 @@ class AdaptivePhysicsTransport2D(nn.Module):
                  attn_dim=32, dist_threshold_km=300.0, sigma_d=200.0,
                  sigma_h=1200.0, sigma_tau_init_h=3.0, speed_floor_kmh=0.5,
                  diff_hidden_dim=16, diffusivity_along_init=50.0,
-                 diffusivity_cross_init=20.0, t_eps_hours=0.25):
+                 diffusivity_cross_init=20.0, t_eps_hours=0.25,
+                 dt_hours=3.0, transport_agg='softmax_lag'):
         super().__init__()
+        assert transport_agg in ('softmax_lag', 'sum_integral'), \
+            f"transport_agg must be 'softmax_lag' or 'sum_integral', got {transport_agg}"
 
         self.q_proj = nn.Linear(hidden_dim, attn_dim, bias=False)
         self.k_proj = nn.Linear(hidden_dim, attn_dim, bias=False)
@@ -148,6 +220,8 @@ class AdaptivePhysicsTransport2D(nn.Module):
         self.scale = attn_dim ** -0.5
         self.speed_floor_kmh = speed_floor_kmh
         self.t_eps_hours = t_eps_hours
+        self.dt_hours = dt_hours
+        self.transport_agg = transport_agg
 
         # learnable but not softmax-tied: each can shrink to ~0 if it
         # isn't earning its keep, independent of the others. Identical to
@@ -157,6 +231,12 @@ class AdaptivePhysicsTransport2D(nn.Module):
         self.w_wind = nn.Parameter(torch.tensor(1.0))
         self.w_terrain = nn.Parameter(torch.tensor(1.0))
         self.w_lag = nn.Parameter(torch.tensor(1.0))
+        # weight on log(green + eps) fused directly into the attention
+        # logits - see class docstring "PHYSICS-FUSED ATTENTION LOGITS".
+        # Same free-scalar, can-shrink-to-0 treatment as the four bonuses
+        # above; kept as a separate parameter (not folded into one of
+        # them) so it can be inspected/ablated independently.
+        self.w_phys = nn.Parameter(torch.tensor(1.0))
         self.log_sigma_tau = nn.Parameter(torch.tensor(_inv_softplus(sigma_tau_init_h)))
 
         # context-adaptive anisotropic diffusivity MLP - see class
@@ -243,20 +323,11 @@ class AdaptivePhysicsTransport2D(nn.Module):
         terrain_tiled = self.terrain_bias.unsqueeze(1).expand(N, K, N).reshape(N, K * N)
         mask_tiled = self.neighbor_mask.unsqueeze(1).expand(N, K, N).reshape(N, K * N)
 
-        score = (content_score
-                 + self.w_dist * dist_tiled.unsqueeze(0)
-                 + self.w_wind * wind_align_flat
-                 + self.w_terrain * terrain_tiled.unsqueeze(0)
-                 + self.w_lag * lag_bias_flat)
-
-        score = score.masked_fill(~mask_tiled.unsqueeze(0), float('-inf'))
-        weights = torch.nan_to_num(torch.softmax(score, dim=-1), nan=0.0)
-        context = torch.bmm(weights, v)
-
-        # --- explicit physical transport estimate: 2-D anisotropic
-        # advection-diffusion Green's function with context-adaptive
-        # diffusivity (see class docstring) - independent of, and not
-        # feeding back into, the learned attention above. ---
+        # --- 2-D anisotropic advection-diffusion Green's function with
+        # context-adaptive diffusivity (see class docstring) - computed
+        # here, BEFORE the learned-attention score, because it now feeds
+        # BOTH the learned attention logits (log-fusion, right below) AND
+        # the explicit `transported` estimate further down. ---
         d = self.dist_km.view(1, 1, N, N)
         x_downwind = d * cos_theta                                        # [B,K,N_j,N_i]
         y_crosswind = d * sin_theta                                       # [B,K,N_j,N_i]
@@ -293,32 +364,97 @@ class AdaptivePhysicsTransport2D(nn.Module):
             * torch.exp(-(along_term + cross_term))
         )                                                                  # [B, K, N_receiver, N_source]
 
+        # --- PHYSICS-FUSED ATTENTION LOGITS: A_final = A_learned +
+        # w_phys * log(K_ij(tau) + eps) - see class docstring. green is
+        # bounded in [0, ~0.16] given the D/t_eff clamps/floors above, so
+        # log(green + 1e-6) is itself bounded below at ln(1e-6) ~= -13.8
+        # with no extra clamp needed: masked-out (non-neighbor/self)
+        # entries are still hard-excluded by mask_tiled below regardless
+        # of this value, and for real neighbors a strongly negative value
+        # here is the intended effect (physically-implausible source/lag
+        # combinations - wrong arrival time, wrong side of the plume -
+        # should be suppressed in the softmax, not just the four separate
+        # hand-crafted bonuses that predate this kernel). w_phys is free
+        # to shrink toward 0 during training if this term doesn't earn
+        # its keep, exactly like w_dist/w_wind/w_terrain/w_lag.
+        log_green_flat = _flatten(torch.log(green + 1e-6))
+
+        score = (content_score
+                 + self.w_dist * dist_tiled.unsqueeze(0)
+                 + self.w_wind * wind_align_flat
+                 + self.w_terrain * terrain_tiled.unsqueeze(0)
+                 + self.w_lag * lag_bias_flat
+                 + self.w_phys * log_green_flat)
+
+        score = score.masked_fill(~mask_tiled.unsqueeze(0), float('-inf'))
+        weights = torch.nan_to_num(torch.softmax(score, dim=-1), nan=0.0)
+        context = torch.bmm(weights, v)
+
+        # --- explicit physical transport estimate (unchanged): the same
+        # `green` kernel above, aggregated additively across sources per
+        # the superposition argument in the file/class docstring. This
+        # stays a SEPARATE output from `context` - the log-fusion above
+        # lets `green` also shape the learned attention, but the two
+        # remain independent quantities reaching mix_gate side by side. ---
         w_transport = self.transport_mask.to(green.dtype).view(1, 1, N, N) * green
 
         # pm25_lag is clamped here, not upstream: it's z-scored PM2.5, and
         # this dataset's tail is extreme (one reading in the training
         # window sits at 82 std devs above the mean - real wildfire-smoke
-        # spikes, not a data bug - see prepare_sensor_dataset.py). pi sums
-        # to 1 over k, so transport_from_source alone can't exceed this
-        # clamp regardless of how peaked pi gets - but transported then
-        # sums ADDITIVELY across every neighbor (deliberately, per this
-        # class's superposition argument - see file/class docstring), so
-        # a smoke event hitting several neighboring sensors at once could
-        # still add their clamped contributions into a large-but-bounded
-        # value, rather than the unbounded one this fixes: an un-clamped
-        # 50-epoch/5-repeat run on dataset 4 diverged on several repeats
-        # (train_loss mean 44, std 72 - a handful of exploding runs, not
-        # steady learning) traced to exactly this path. V1
-        # (MultiLagPhysicsAwareSpatialAttention in model/airlapse.py) has
-        # the same unclamped einsum and is likely exposed to a milder
-        # version of this on this dataset too - not fixed here since V1's
-        # own results are comparatively stable and this file's scope is
-        # V2, but worth the same fix if V1 is revisited.
+        # spikes, not a data bug - see prepare_sensor_dataset.py). Applies
+        # to both transport_agg modes below.
         pm25_lag_clamped = pm25_lag.clamp(-10.0, 10.0)
-        pi = w_transport / (w_transport.sum(dim=1, keepdim=True) + 1e-8)  # sums to 1 over k
-        transport_from_source = torch.einsum('bkij,bkj->bij', pi, pm25_lag_clamped)  # [B, N_receiver, N_source]
-        reach = w_transport.max(dim=1).values                             # [B, N_receiver, N_source]
-        transported = (reach * transport_from_source).sum(dim=-1)         # [B, N_receiver]
+
+        if self.transport_agg == 'softmax_lag':
+            # ORIGINAL V2 aggregation: pi sums to 1 over tau (a WEIGHTED
+            # AVERAGE of historical concentration, not a sum), separately
+            # scaled by reach (the single peak-plausibility lag). See
+            # class docstring "TRANSPORT AGGREGATION MODES" for why this
+            # is not literal superposition over tau, and its own
+            # numerical-safety history:
+            # pi sums to 1 over k, so transport_from_source alone can't
+            # exceed this clamp regardless of how peaked pi gets - but
+            # transported then sums ADDITIVELY across every neighbor
+            # (deliberately, per this class's superposition argument -
+            # see file/class docstring), so a smoke event hitting several
+            # neighboring sensors at once could still add their clamped
+            # contributions into a large-but-bounded value, rather than
+            # the unbounded one this fixes: an un-clamped 50-epoch/
+            # 5-repeat run on dataset 4 diverged on several repeats
+            # (train_loss mean 44, std 72 - a handful of exploding runs,
+            # not steady learning) traced to exactly this path. V1
+            # (MultiLagPhysicsAwareSpatialAttention in model/airlapse.py)
+            # has the same unclamped einsum and is likely exposed to a
+            # milder version of this on this dataset too - not fixed here
+            # since V1's own results are comparatively stable and this
+            # file's scope is V2, but worth the same fix if V1 is
+            # revisited.
+            pi = w_transport / (w_transport.sum(dim=1, keepdim=True) + 1e-8)  # sums to 1 over k
+            transport_from_source = torch.einsum('bkij,bkj->bij', pi, pm25_lag_clamped)  # [B, N_receiver, N_source]
+            reach = w_transport.max(dim=1).values                             # [B, N_receiver, N_source]
+            transported = (reach * transport_from_source).sum(dim=-1)         # [B, N_receiver]
+        else:  # 'sum_integral'
+            # Literal double summation over (tau, j) - true superposition,
+            # no per-lag normalization - scaled by dt_hours to approximate
+            # the continuous convolution integral C_i(t) = sum_j INTEGRAL
+            # K_ij(tau) P_j(t-tau) dtau over the sampled tau axis (see
+            # class docstring). Only tau gets the dtau scale factor: tau
+            # is a discrete sample of a continuous time axis, but j (the
+            # source stations) is a fixed, finite set of real sensors,
+            # not a sampling of a continuous spatial field - there is no
+            # "integral over j" to approximate, so it stays a plain sum.
+            # NOTE ON STABILITY: this deliberately removes the pi
+            # normalization that kept the 'softmax_lag' mode's magnitude
+            # bounded (see that branch's comment for the divergence this
+            # was originally added to fix) - MORE (tau, j) pairs can now
+            # add up unnormalized, and the dt_hours factor scales the
+            # whole sum UP, not down. The hard clamp below is the only
+            # safety net for this mode; if it saturates often in practice
+            # (check the pre-clamp magnitude during training), that's a
+            # sign this mode needs its own, looser-than-'softmax_lag'
+            # bound rather than sharing the one tuned for the other mode.
+            transported = self.dt_hours * torch.einsum(
+                'bkij,bkj->bi', w_transport, pm25_lag_clamped)                # [B, N_receiver]
         # Hard backstop on the aggregated, additive-across-neighbors
         # result too - belt-and-suspenders given how much is riding on
         # this one number reaching mix_gate sanely.
@@ -457,6 +593,11 @@ class AirLapseV2(nn.Module):
     recovering the original per-node-independent encoding exactly (for
     ablating whether it actually helps). No effect in 'per_step' mode -
     see TemporalGraphEncoder's docstring for why.
+
+    transport_agg: forwarded to AdaptivePhysicsTransport2D - see its
+    docstring ("TRANSPORT AGGREGATION MODES") for the 'softmax_lag'
+    (original V2 default) vs. 'sum_integral' (literal double-sum
+    superposition over tau and j, dt_hours-scaled) tradeoff.
     """
     def __init__(self, hist_len, pred_len, in_dim, city_num, batch_size, device,
                  edge_index, edge_attr, wind_mean, wind_std,
@@ -469,7 +610,7 @@ class AirLapseV2(nn.Module):
                  sigma_tau_init_h=3.0, dt_hours=3.0,
                  diff_hidden_dim=16, diffusivity_along_init=50.0,
                  diffusivity_cross_init=20.0, t_eps_hours=0.25,
-                 st_encoder_layers=1):
+                 st_encoder_layers=1, transport_agg='softmax_lag'):
         super(AirLapseV2, self).__init__()
         assert spatial_mix_mode in ('bottleneck', 'per_step'), \
             f"spatial_mix_mode must be 'bottleneck' or 'per_step', got {spatial_mix_mode}"
@@ -545,6 +686,8 @@ class AirLapseV2(nn.Module):
             diffusivity_along_init=diffusivity_along_init,
             diffusivity_cross_init=diffusivity_cross_init,
             t_eps_hours=t_eps_hours,
+            dt_hours=dt_hours,
+            transport_agg=transport_agg,
         )
         # +1: the explicit scalar transport estimate, concatenated alongside
         # h_grid and the learned attention context.
