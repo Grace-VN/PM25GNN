@@ -587,11 +587,6 @@ def get_model():
             # 0 disables it for an apples-to-apples ablation against the
             # per-node-independent encoding this file used before.
             st_encoder_layers=config['experiments'].get('airlapsev2_st_encoder_layers', 1),
-            # Off by default: reopens the classic seq2seq compounding-error
-            # risk over the 24-step horizon (see AirLapseV2's docstring
-            # "DECODER-SIDE RECURRING TRANSPORT") - opt in explicitly to
-            # A/B it against the default per-station-independent decoder.
-            decoder_transport=config['experiments'].get('airlapsev2_decoder_transport', False),
         )
     else:
         raise Exception('Wrong model name!')
