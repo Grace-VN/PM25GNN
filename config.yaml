@@ -11,6 +11,13 @@ experiments:
   save_npy: True
   dataset_num: 4
   model: AirLapseV2
+  # New, unproven branch (see AirLapseV2's docstring "CONTINUOUS
+  # ODE-DRIVEN TRANSPORT") - torchdiffeq's adjoint method makes this
+  # meaningfully slower to train than the current best (585cdb0,
+  # RMSE 2.9396); train.epochs/exp_repeat below are scaled down for a
+  # smoke test first, not the full validated budget - see that section's
+  # own comment before trusting any result from this run at face value.
+  airlapsev2_ode_transport: true
 # Available models below, grouped: generic neural network/graph
 # architectures, generic transformers, air-quality-forecasting-domain-
 # specific models, then AirLapse (this repo's proposed model). To switch,
@@ -45,12 +52,17 @@ experiments:
 
 train:
   batch_size: 32
-  epochs: 50
-  exp_repeat: 5
+  # Scaled down for a smoke test of ode_transport (see the experiments:
+  # comment above) - the full validated budget elsewhere in this repo's
+  # history is epochs: 50 / exp_repeat: 5 / early_stop: 10. Restore those
+  # once a small run confirms ode_transport trains stably and is worth
+  # the full budget's cost.
+  epochs: 5
+  exp_repeat: 1
   hist_len: 24
   pred_len: 24
   weight_decay: 0.0005
-  early_stop: 10
+  early_stop: 3
   lr: 0.0005
 
 filepath:
