@@ -457,6 +457,32 @@ class AirLapseV2(nn.Module):
     recovering the original per-node-independent encoding exactly (for
     ablating whether it actually helps). No effect in 'per_step' mode -
     see TemporalGraphEncoder's docstring for why.
+
+    DECODER-SIDE RECURRING TRANSPORT (decoder_transport, default False).
+    Every spatial/physical computation above - AdaptivePhysicsTransport2D,
+    TemporalGraphEncoder - runs exactly once, on the HISTORICAL encoder
+    output; the decoder that then unrolls all pred_len future steps is a
+    plain per-station GRUCell with zero cross-station interaction and no
+    PM2.5 autoregression at all, even though feature_future already
+    supplies real future wind speed/direction per station (a known-future-
+    covariates setup) that is otherwise never used for transport. When
+    True, spatial_attn (the SAME AdaptivePhysicsTransport2D instance,
+    no new physics/parameters) is called again at every decode step,
+    K=1, using: that step's own real future wind for the CURRENT query
+    station, the SOURCE station's wind at the time its concentration was
+    current (one step behind, matching the source-wind-at-that-lag
+    convention used everywhere else in this file), and the model's own
+    previous prediction (or, for the first step, the real last historical
+    observation) as the transported PM2.5 mass - closing the retrospective/
+    prospective asymmetry above. Only the scalar `transported_t` (not the
+    full attention `context_t`) is fed into decoder_cell's input, to keep
+    the added parameter/compute cost minimal. The autoregressive PM2.5
+    value is `.detach()`-ed before reuse (see forward()'s inline comment):
+    h_dec's own recurrence still carries the real gradient signal; this
+    just avoids opening a second, harder-to-diagnose gradient path through
+    24 nested reapplications of spatial_attn. Off by default - this
+    reopens the classic seq2seq compounding-error risk over a 24-step
+    horizon, so it should be A/B'd against the default before trusting it.
     """
     def __init__(self, hist_len, pred_len, in_dim, city_num, batch_size, device,
                  edge_index, edge_attr, wind_mean, wind_std,
@@ -469,7 +495,7 @@ class AirLapseV2(nn.Module):
                  sigma_tau_init_h=3.0, dt_hours=3.0,
                  diff_hidden_dim=16, diffusivity_along_init=50.0,
                  diffusivity_cross_init=20.0, t_eps_hours=0.25,
-                 st_encoder_layers=1):
+                 st_encoder_layers=1, decoder_transport=False):
         super(AirLapseV2, self).__init__()
         assert spatial_mix_mode in ('bottleneck', 'per_step'), \
             f"spatial_mix_mode must be 'bottleneck' or 'per_step', got {spatial_mix_mode}"
@@ -489,6 +515,10 @@ class AirLapseV2(nn.Module):
         self.spatial_mix_mode = spatial_mix_mode
         self.dt_hours = dt_hours
         self.max_lag = min(max_lag, hist_len)
+        # Opt-in (default False - see class docstring "DECODER-SIDE
+        # RECURRING TRANSPORT"): reuses spatial_attn once per decode step
+        # instead of only at the historical snapshot t=0.
+        self.decoder_transport = decoder_transport
 
         # kept for signature parity across benchmark models
         self.edge_index = edge_index
@@ -555,8 +585,12 @@ class AirLapseV2(nn.Module):
         self.latent_head = nn.Linear(hidden_dim, latent_dim)
 
         self.decoder_init = nn.Linear(hidden_dim + latent_dim, hidden_dim)
+        # +1 when decoder_transport is on: the per-step explicit transport
+        # scalar (see forward()), concatenated alongside feat_fut and z -
+        # same "+1 scalar" pattern mix_gate above already uses.
         self.decoder_cell = nn.GRUCell(
-            input_size=self.feature_dim + latent_dim, hidden_size=hidden_dim,
+            input_size=self.feature_dim + latent_dim + (1 if decoder_transport else 0),
+            hidden_size=hidden_dim,
         )
         self.output_head = nn.Linear(hidden_dim, 1)
 
@@ -668,14 +702,76 @@ class AirLapseV2(nn.Module):
         else:
             h_mixed = self._encode_per_step(x, feature_hist, B, N)
 
+        # mix_gate (a Linear) feeds DIRECTLY into latent_head (another
+        # Linear) below, with no activation in between - two consecutive
+        # Linear layers compose to a single linear map regardless of the
+        # intermediate width, so despite the name, "mix_gate" was not
+        # actually gating/nonlinearly recombining [h_grid, context,
+        # transported] at all. This is the single densest fusion point in
+        # the model (everything spatial+temporal must pass through it
+        # before every future prediction), so this one activation
+        # restores real nonlinear capacity there - and, since decoder_init
+        # below consumes this same h_mixed, benefits the decoder's initial
+        # state too. Unconditional (not behind a flag): strictly adds
+        # capacity with no structural change to information flow, unlike
+        # decoder_transport below.
+        h_mixed = F.gelu(h_mixed)
+
         z = self.latent_head(h_mixed)
 
         h_dec = self.decoder_init(torch.cat([h_mixed, z], dim=-1))
         preds = []
+
+        if self.decoder_transport:
+            # DECODER-SIDE RECURRING TRANSPORT (see class docstring) - reuse
+            # the same, already-tuned spatial_attn module once per decode
+            # step, K=1, instead of only at the historical snapshot t=0.
+            # feat_all lets _wind_at_idxs address both historical and
+            # future steps with one combined time index (both share the
+            # exact same fixed tail channel layout, so this is safe).
+            feat_all = torch.cat([feature_hist, feature_future], dim=1)  # [B, hist_len+pred_len, N, feature_dim]
+            # Source PM2.5 for the FIRST decode step's transport term is the
+            # real last historical observation; from then on it's the
+            # model's own previous prediction (autoregressive feedback that
+            # otherwise doesn't exist anywhere else in this decoder).
+            # Detached deliberately: gradients still flow normally through
+            # h_dec's own recurrence (the actual learning signal for the
+            # decoder), but NOT through 24 nested reapplications of
+            # spatial_attn via this discrete value hand-off - a real
+            # concern, not a hypothetical one, given this is the same
+            # module whose einsum this file has already had to clamp
+            # against divergence once (see AdaptivePhysicsTransport2D's
+            # docstring). Detaching keeps the recurring-transport signal
+            # informative at both train and inference time without also
+            # opening a second, harder-to-diagnose path for compounding
+            # gradient blowup across the horizon.
+            last_pm25 = pm25_hist[:, -1, :, 0].detach()  # [B, N]
+
         for t in range(self.pred_len):
-            step_in = torch.cat([feat_fut[:, t], z], dim=-1)
+            if self.decoder_transport:
+                h_dec_grid = h_dec.reshape(B, N, self.hidden_dim)
+                h_lag_t = h_dec_grid.unsqueeze(1)                    # [B,1,N,hidden] - K=1
+                pm25_lag_t = last_pm25.unsqueeze(1)                  # [B,1,N]
+                # Source's own wind/hour AT THE TIME its PM2.5 was current -
+                # one combined-index step behind this future step t, same
+                # convention _encode_bottleneck/_encode_per_step use
+                # (source wind indexed at the SAME lag as the source pm25).
+                src_idx = self.hist_len - 1 + t
+                travel_bearing_t, speed_kmh_t, hour_t = self._wind_at_idxs(feat_all, [src_idx], B, N)
+                k_hours_t = torch.full((1,), self.dt_hours, dtype=x.dtype, device=x.device)
+                _, transported_t = self.spatial_attn(
+                    h_dec_grid, h_lag_t, travel_bearing_t, speed_kmh_t, k_hours_t, pm25_lag_t, hour_t)
+                step_in = torch.cat(
+                    [feat_fut[:, t], z, transported_t.reshape(B * N, 1)], dim=-1)
+            else:
+                step_in = torch.cat([feat_fut[:, t], z], dim=-1)
+
             h_dec = self.decoder_cell(step_in, h_dec)
-            preds.append(self.output_head(h_dec))
+            pred_t = self.output_head(h_dec)
+            preds.append(pred_t)
+
+            if self.decoder_transport:
+                last_pm25 = pred_t.reshape(B, N).detach()
 
         out = torch.stack(preds, dim=1)
         pm25_pred = out.reshape(B, N, self.pred_len, 1).permute(0, 2, 1, 3)
