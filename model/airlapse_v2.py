@@ -97,6 +97,8 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchdiffeq import odeint as _odeint
+from torchdiffeq import odeint_adjoint as _odeint_adjoint
 
 from model.airlapse import haversine_km, bearing_deg, _inv_softplus
 
@@ -401,6 +403,182 @@ class AdaptivePhysicsTransport2D(nn.Module):
         return context, transported
 
 
+class ContinuousTransportODEFunc(nn.Module):
+    """
+    Continuous-time counterpart to AdaptivePhysicsTransport2D's Green's-
+    function transport estimate. AdaptivePhysicsTransport2D (and
+    everything upstream of it in this file) computes physics exactly
+    ONCE, from historical lags, and hands the result to mix_gate as a
+    fixed feature - the 24-step decoder that follows is then completely
+    physics-blind (see AirLapseV2's class docstring "CONTINUOUS ODE-
+    DRIVEN TRANSPORT" for the full motivation: both AirPhyNet and
+    AirDualODE, model/airphynet.py and model/airdualode.py, outperform
+    AirLapseV2 on dataset 4, and the one thing they share structurally is
+    that diffusion/advection ARE the dz/dt of a neural ODE, integrated
+    continuously across the WHOLE forecast horizon via torchdiffeq, not
+    a one-shot estimate). This module is that same structural pattern,
+    reusing AdaptivePhysicsTransport2D's own wind-aligned anisotropic
+    kernel (downwind/crosswind decomposition, context-adaptive
+    diffusivity) as the exchange conductance, rather than AirPhyNet/
+    AirDualODE's simpler isotropic-ChebConv-diffusion + signed-flow-
+    difference-advection - so this ODE branch is finally giving AirLapse's
+    OWN, already-validated physics a chance to act continuously, not a
+    weaker reimplementation of what those two papers do.
+
+    Deliberately self-contained (own diff_mlp, not shared with
+    AdaptivePhysicsTransport2D): refactoring that module's Green's-
+    function computation into a function shared by both would risk
+    regressing the already-tuned, currently-best-performing encoder-side
+    attention for the sake of this new, unproven branch - the same
+    reasoning AirDualODE's own file gives for reimplementing
+    _GatedFusion locally instead of importing it from model/airphynet.py.
+
+    AUTONOMOUS ODE - same simplification AirPhyNet/AirDualODE both make
+    (see their set_wind()/set_context() methods): torchdiffeq's
+    adaptive solver calls this function at arbitrary, solver-chosen t
+    (not necessarily aligned to real hourly steps), so there's no clean
+    way to look up "the actual future wind at exactly this t" the way a
+    fixed-step decoder can. The exchange conductance g_ij is instead
+    frozen once, from the LAST OBSERVED (historical) step, via
+    set_context() before integration starts, and reused for the entire
+    horizon - exactly what both reference architectures already do.
+
+    DYNAMICS. For station i, at any solver-chosen t:
+        dz_i/dt = sum_{j in neighbors(i)} g_ij * (z_j - z_i)   [exchange]
+                  + beta_i * z_i                                [reaction, optional]
+    g_ij (frozen - see set_context() for the exact Green's-function
+    formula, t_eps_hours used as the "instantaneous" reference elapsed
+    time rather than a lag-dependent one) plays the role a weighted graph
+    Laplacian's off-diagonal entry would: mass flows from j to i in
+    proportion to their CONCENTRATION DIFFERENCE (z_j - z_i) and how
+    strongly the frozen wind connects j to i. This (z_j - z_i) form is
+    what makes it a genuine RATE OF CHANGE, unlike AdaptivePhysicsTransport2D's
+    `transported` (an estimate of absolute incoming mass at one instant
+    from historical values, not a derivative) - and it is (ignoring the
+    optional reaction term) approximately mass-conserving, unlike
+    `transported`'s deliberate, superposition-based non-conservation (see
+    that class's own docstring for why THAT design choice is correct for
+    THAT quantity - a different quantity, a different choice here).
+    beta_i (off by default - see reaction_term) is a learnable per-
+    station scalar for local net production/removal that pure transport
+    can't represent - AirDualODE's "open system" reaction term, borrowed
+    directly (see model/airdualode.py's own docstring point 1 for the
+    physical motivation): a station's own emissions or precipitation
+    washout aren't transport from anywhere.
+
+    Numerical stability: |dz/dt| is soft-bounded via tanh, same trick
+    AirPhyNet's own _ODEFunc uses (see model/airphynet.py) and for the
+    same reason - an unbounded neural-ODE vector field lets the state (or
+    the adjoint method's required step size) blow up over a long-enough
+    integration horizon, which torchdiffeq surfaces as an opaque
+    "underflow in dt" solver failure rather than a normal training
+    signal. This is a freshly-initialized, never-before-trained dynamical
+    system (unlike AdaptivePhysicsTransport2D's diff_mlp, which starts
+    biased toward V1's tuned defaults), so this safeguard matters more
+    here, not less.
+    """
+    def __init__(self, latent_dim, station_coords, station_elevation,
+                 dist_threshold_km=300.0, diff_hidden_dim=16,
+                 diffusivity_along_init=50.0, diffusivity_cross_init=20.0,
+                 t_eps_hours=0.25, max_deriv=10.0, reaction_term=False):
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.t_eps_hours = t_eps_hours
+        self.max_deriv = max_deriv
+        self.reaction_term = reaction_term
+
+        dist = haversine_km(station_coords)
+        neighbor_mask = dist <= dist_threshold_km
+        not_self = ~torch.eye(dist.shape[0], dtype=torch.bool)
+        self.register_buffer('transport_mask', neighbor_mask & not_self)
+        self.register_buffer('dist_km', dist)
+        # bearing FROM source TO receiver, laid out [receiver, source] -
+        # same convention as AdaptivePhysicsTransport2D.bearing_j_i.
+        self.register_buffer('bearing_j_i', bearing_deg(station_coords).t())
+        self.register_buffer('station_elevation', station_elevation)
+
+        # Own diff_mlp (5 inputs: wind_speed/10, sin(hour), cos(hour),
+        # elevation/1000, pm25 - identical context shape to
+        # AdaptivePhysicsTransport2D's, but a SEPARATE set of weights -
+        # see class docstring for why this isn't shared) - same bias-
+        # initialization convention (start near V1's tuned isotropic
+        # scale, let training adjust away from it).
+        self.diff_mlp = nn.Sequential(
+            nn.Linear(5, diff_hidden_dim), nn.Tanh(), nn.Linear(diff_hidden_dim, 2),
+        )
+        with torch.no_grad():
+            self.diff_mlp[-1].weight.mul_(0.01)
+            self.diff_mlp[-1].bias[0] = _inv_softplus(diffusivity_along_init)
+            self.diff_mlp[-1].bias[1] = _inv_softplus(diffusivity_cross_init)
+
+        if reaction_term:
+            self.beta = nn.Parameter(torch.zeros(station_coords.shape[0], latent_dim))
+
+        self.g_ij = None  # [B, N_receiver, N_source] - set per-forward via set_context()
+
+    def set_context(self, travel_bearing, wind_speed_kmh, hour, pm25):
+        """
+        Freezes the exchange conductance g_ij for the upcoming
+        integration - see class docstring "AUTONOMOUS ODE". Each arg is
+        [B, N] - the LAST OBSERVED step's per-SOURCE-station context
+        (same de-normalized quantities AdaptivePhysicsTransport2D reads
+        per-lag, here evaluated once).
+        """
+        B, N = travel_bearing.shape
+        angle_diff = travel_bearing.unsqueeze(1) - self.bearing_j_i.view(1, N, N)  # [B, N_recv, N_src]
+        cos_theta = torch.cos(angle_diff)
+        sin_theta = torch.sin(angle_diff)
+        d = self.dist_km.view(1, N, N)
+        x_downwind = d * cos_theta                                        # [B, N_recv, N_src]
+        y_crosswind = d * sin_theta
+
+        speed = wind_speed_kmh.clamp(min=0.0)                              # [B, N_src]
+        elev_km = (self.station_elevation / 1000.0).view(1, N).expand(B, N)
+        hour_rad = hour * (2.0 * math.pi / 24.0)
+        context_j = torch.stack([
+            speed / 10.0, torch.sin(hour_rad), torch.cos(hour_rad), elev_km, pm25,
+        ], dim=-1)                                                        # [B, N_src, 5]
+        diff_raw = self.diff_mlp(context_j)                                # [B, N_src, 2]
+        # Same generous clamp range/reasoning as AdaptivePhysicsTransport2D's
+        # own diff_mlp output - see that class's forward() comment.
+        D_along = F.softplus(diff_raw[..., 0]).clamp(min=2.0, max=2000.0).view(B, 1, N)
+        D_cross = F.softplus(diff_raw[..., 1]).clamp(min=2.0, max=2000.0).view(B, 1, N)
+
+        t_eff = self.t_eps_hours  # frozen "instantaneous" reference elapsed time - see class docstring
+        v_signed = speed.view(B, 1, N)                                     # [B, 1, N_src]
+        along_term = (x_downwind - v_signed * t_eff) ** 2 / (4.0 * D_along * t_eff)
+        cross_term = y_crosswind ** 2 / (4.0 * D_cross * t_eff)
+        green = (
+            1.0 / (4.0 * math.pi * torch.sqrt(D_along * D_cross) * t_eff)
+            * torch.exp(-(along_term + cross_term))
+        )                                                                  # [B, N_recv, N_src]
+
+        self.g_ij = self.transport_mask.to(green.dtype).view(1, N, N) * green
+
+    def forward(self, t, z):
+        """z: [B, N*latent_dim] (flattened, as torchdiffeq requires a
+        plain tensor state) -> dz/dt, same shape."""
+        if self.g_ij is None:
+            raise RuntimeError(
+                "ContinuousTransportODEFunc.forward() called before set_context() - "
+                "the exchange conductance must be frozen once before integration."
+            )
+        B = z.shape[0]
+        N = self.g_ij.shape[-1]
+        x = z.reshape(B, N, self.latent_dim)
+
+        incoming = torch.bmm(self.g_ij, x)                                 # [B,N,latent_dim] = sum_j g_ij * x_j
+        row_sum_g = self.g_ij.sum(dim=-1, keepdim=True)                    # [B,N,1] = sum_j g_ij, per receiver
+        grad = incoming - row_sum_g * x                                    # sum_j g_ij * (x_j - x_i)
+
+        if self.reaction_term:
+            grad = grad + self.beta.unsqueeze(0) * x
+
+        # Soft-bound - see class docstring "Numerical stability".
+        grad = self.max_deriv * torch.tanh(grad / self.max_deriv)
+        return grad.reshape(B, N * self.latent_dim)
+
+
 class TemporalGraphEncoder(nn.Module):
     """
     "Option B" joint spatio-temporal encoder (in the terminology of the
@@ -531,6 +709,45 @@ class AirLapseV2(nn.Module):
     recovering the original per-node-independent encoding exactly (for
     ablating whether it actually helps). No effect in 'per_step' mode -
     see TemporalGraphEncoder's docstring for why.
+
+    CONTINUOUS ODE-DRIVEN TRANSPORT (ode_transport, default False).
+    Motivation: on dataset 4's own leaderboard (results/4-new), the two
+    OTHER physics-guided benchmarks here - AirPhyNet (model/airphynet.py,
+    RMSE ~2.83, best overall) and AirDualODE (model/airdualode.py, RMSE
+    ~2.94, essentially tied with AirLapseV2's own best result) - both
+    outperform or match AirLapseV2, and share one structural trait
+    neither AirLapseV2 nor AirLapse V1 has: their diffusion/advection
+    physics IS the dz/dt of a neural ODE, integrated continuously across
+    the ENTIRE forecast horizon via torchdiffeq - not a value computed
+    once from history and handed to a decoder as a static feature (which
+    is exactly what AdaptivePhysicsTransport2D's `transported` is: the
+    24-step decoder that follows it is completely physics-blind for the
+    whole forecast). This is a different, more principled route to the
+    same insight behind an earlier, reverted "decoder-side recurring
+    transport" attempt (discrete, detached, autoregressive re-evaluation
+    every step) that did not help in practice - continuous ODE
+    integration gives smooth, adjoint-based gradients across the whole
+    trajectory with no per-step discretization/teacher-forcing artifact,
+    which the discrete version could not.
+
+    When True: ContinuousTransportODEFunc (above) - reusing
+    AdaptivePhysicsTransport2D's own wind-aligned anisotropic kernel as
+    its exchange conductance, not AirPhyNet/AirDualODE's simpler
+    isotropic-diffusion-plus-signed-advection - integrates a SEPARATE,
+    physics-only latent trajectory across the full pred_len horizon,
+    initialized from the last observed [pm25, wind] (ode_init_proj) -
+    deliberately NOT from h_mixed/z, so this branch carries a genuinely
+    distinct physical signal rather than reusing the same learned
+    representation the GRUCell decoder already has. At every decode
+    step, this trajectory is projected to hidden_dim (ode_phy_to_hidden)
+    and blended with decoder_cell's own output via a learned sigmoid gate
+    (ode_fusion_gate) - AFTER decoder_cell, not fed back into its
+    recurrence - so the GRUCell's own hidden-state path is completely
+    undisturbed and cannot reintroduce the instability the earlier
+    discrete attempt risked; only the final representation reaching
+    output_head changes. Off by default - this is a new, unproven branch
+    (fresh ODE dynamics, no prior tuning) that should be A/B'd against
+    the current best before trusting it.
     """
     def __init__(self, hist_len, pred_len, in_dim, city_num, batch_size, device,
                  edge_index, edge_attr, wind_mean, wind_std,
@@ -543,7 +760,11 @@ class AirLapseV2(nn.Module):
                  sigma_tau_init_h=3.0, dt_hours=3.0,
                  diff_hidden_dim=16, diffusivity_along_init=50.0,
                  diffusivity_cross_init=20.0, t_eps_hours=0.25,
-                 st_encoder_layers=1):
+                 st_encoder_layers=1,
+                 ode_transport=False, ode_latent_dim=8, ode_diff_hidden_dim=16,
+                 ode_diffusivity_along_init=50.0, ode_diffusivity_cross_init=20.0,
+                 ode_t_eps_hours=0.25, ode_max_deriv=10.0, ode_reaction_term=False,
+                 ode_method='dopri5', ode_rtol=1e-3, ode_atol=1e-4, ode_adjoint=True):
         super(AirLapseV2, self).__init__()
         assert spatial_mix_mode in ('bottleneck', 'per_step'), \
             f"spatial_mix_mode must be 'bottleneck' or 'per_step', got {spatial_mix_mode}"
@@ -563,6 +784,15 @@ class AirLapseV2(nn.Module):
         self.spatial_mix_mode = spatial_mix_mode
         self.dt_hours = dt_hours
         self.max_lag = min(max_lag, hist_len)
+        # Opt-in (default False - see class docstring "CONTINUOUS
+        # ODE-DRIVEN TRANSPORT"): a separate, continuously-integrated
+        # physics branch fused into the decoder's output at every step.
+        self.ode_transport = ode_transport
+        self.ode_latent_dim = ode_latent_dim
+        self.ode_method = ode_method
+        self.ode_rtol = ode_rtol
+        self.ode_atol = ode_atol
+        self.ode_adjoint = ode_adjoint
 
         # kept for signature parity across benchmark models
         self.edge_index = edge_index
@@ -633,6 +863,29 @@ class AirLapseV2(nn.Module):
             input_size=self.feature_dim + latent_dim, hidden_size=hidden_dim,
         )
         self.output_head = nn.Linear(hidden_dim, 1)
+
+        # --- CONTINUOUS ODE-DRIVEN TRANSPORT (see class docstring) ---
+        if ode_transport:
+            self.ode_func = ContinuousTransportODEFunc(
+                latent_dim=ode_latent_dim,
+                station_coords=station_coords,
+                station_elevation=station_elevation,
+                dist_threshold_km=dist_threshold_km,
+                diff_hidden_dim=ode_diff_hidden_dim,
+                diffusivity_along_init=ode_diffusivity_along_init,
+                diffusivity_cross_init=ode_diffusivity_cross_init,
+                t_eps_hours=ode_t_eps_hours,
+                max_deriv=ode_max_deriv,
+                reaction_term=ode_reaction_term,
+            )
+            # z0 built from [last_pm25, last_speed_kmh/10, sin(bearing),
+            # cos(bearing)] - deliberately NOT h_mixed, so this branch
+            # carries a genuinely distinct physics-only signal (see class
+            # docstring). 4 inputs, matching AirPhyNet/AirDualODE's own
+            # convention of a small [pm25, wind] initial-state projection.
+            self.ode_init_proj = nn.Linear(4, ode_latent_dim)
+            self.ode_phy_to_hidden = nn.Linear(ode_latent_dim, hidden_dim)
+            self.ode_fusion_gate = nn.Linear(hidden_dim * 2, hidden_dim)
 
     def _wind_at_idxs(self, feature_hist, idxs, B, N):
         """De-normalize the dataset's precomputed speed(km/h)/direction(deg,
@@ -744,12 +997,55 @@ class AirLapseV2(nn.Module):
 
         z = self.latent_head(h_mixed)
 
+        if self.ode_transport:
+            # --- CONTINUOUS ODE-DRIVEN TRANSPORT (see class docstring) ---
+            # Frozen context = the last OBSERVED (historical) step - same
+            # autonomous-ODE simplification AirPhyNet/AirDualODE both make
+            # (see ContinuousTransportODEFunc's docstring).
+            last_bearing, last_speed, last_hour = self._wind_at_idxs(
+                feature_hist, [self.hist_len - 1], B, N)               # each [B,1,N]
+            last_bearing = last_bearing.squeeze(1)                      # [B,N]
+            last_speed = last_speed.squeeze(1)
+            last_hour = last_hour.squeeze(1)
+            last_pm25 = pm25_hist[:, -1, :, 0]                          # [B,N]
+            self.ode_func.set_context(last_bearing, last_speed, last_hour, last_pm25)
+
+            # z0: physics-only initial state, deliberately NOT derived
+            # from h_mixed - see class docstring for why.
+            ode_init_input = torch.stack(
+                [last_pm25, last_speed / 10.0, torch.sin(last_bearing), torch.cos(last_bearing)],
+                dim=-1)                                                 # [B,N,4]
+            z0_phy = self.ode_init_proj(ode_init_input).reshape(B, N * self.ode_latent_dim)
+
+            time_steps = torch.linspace(
+                0.0, self.pred_len * self.dt_hours, self.pred_len + 1,
+                dtype=x.dtype, device=x.device)
+            odeint_fn = _odeint_adjoint if self.ode_adjoint else _odeint
+            phy_traj = odeint_fn(
+                self.ode_func, z0_phy, time_steps,
+                rtol=self.ode_rtol, atol=self.ode_atol, method=self.ode_method)
+            phy_traj = phy_traj[1:]  # drop t=0 initial condition -> [pred_len, B, N*ode_latent_dim]
+            phy_traj = phy_traj.reshape(self.pred_len, B, N, self.ode_latent_dim)
+            phy_traj = phy_traj.permute(1, 2, 0, 3).reshape(
+                B * N, self.pred_len, self.ode_latent_dim)              # [B*N, pred_len, ode_latent_dim]
+
         h_dec = self.decoder_init(torch.cat([h_mixed, z], dim=-1))
         preds = []
         for t in range(self.pred_len):
             step_in = torch.cat([feat_fut[:, t], z], dim=-1)
             h_dec = self.decoder_cell(step_in, h_dec)
-            preds.append(self.output_head(h_dec))
+
+            if self.ode_transport:
+                # Fused AFTER decoder_cell, not fed back into its
+                # recurrence - see class docstring for why this avoids
+                # the earlier discrete-recurring-transport attempt's risk.
+                phy_h = self.ode_phy_to_hidden(phy_traj[:, t])                        # [B*N, hidden_dim]
+                gate = torch.sigmoid(self.ode_fusion_gate(torch.cat([h_dec, phy_h], dim=-1)))
+                h_out = gate * h_dec + (1.0 - gate) * phy_h
+            else:
+                h_out = h_dec
+
+            preds.append(self.output_head(h_out))
 
         out = torch.stack(preds, dim=1)
         pm25_pred = out.reshape(B, N, self.pred_len, 1).permute(0, 2, 1, 3)

@@ -587,6 +587,18 @@ def get_model():
             # 0 disables it for an apples-to-apples ablation against the
             # per-node-independent encoding this file used before.
             st_encoder_layers=config['experiments'].get('airlapsev2_st_encoder_layers', 1),
+            # Off by default - a new, unproven branch (see AirLapseV2's
+            # docstring "CONTINUOUS ODE-DRIVEN TRANSPORT"): integrates a
+            # separate physics-only latent trajectory across the whole
+            # forecast horizon via torchdiffeq (same technique AirPhyNet/
+            # AirDualODE use, both of which beat/tie AirLapseV2 on
+            # dataset 4), fused into the decoder's output at every step.
+            # Meaningfully slower to train (torchdiffeq's adjoint method -
+            # expect roughly AirPhyNet/AirDualODE's own ~12-14s/epoch on
+            # this dataset, not AirLapseV2's current ~0.7s/epoch).
+            ode_transport=config['experiments'].get('airlapsev2_ode_transport', False),
+            ode_latent_dim=config['experiments'].get('airlapsev2_ode_latent_dim', 8),
+            ode_reaction_term=config['experiments'].get('airlapsev2_ode_reaction_term', False),
         )
     else:
         raise Exception('Wrong model name!')
