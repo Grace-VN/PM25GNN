@@ -9,8 +9,8 @@ experiments:
                'u_component_of_wind+950',
                'v_component_of_wind+950',]
   save_npy: True
-  dataset_num: 3
-  model: Informer
+  dataset_num: 2
+  model: AirLapseV2
 # Available models below, grouped: generic neural network/graph
 # architectures, generic transformers, air-quality-forecasting-domain-
 # specific models, then AirLapse (this repo's proposed model). To switch,
