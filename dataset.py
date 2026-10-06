@@ -49,6 +49,10 @@ class HazeData(data.Dataset):
         # Every key below falls back to the KnowAir-family default when
         # absent, so config.yaml's existing 1/2/3 entries don't change.
         self.family = ds_cfg.get('family', 'knowair')
+        # Sensor-family datasets may carry extra per-node channels (e.g. the
+        # BC smoke pilot's fire_iso/fire_aniso - see pilot/build_bcsmoke_pilot.py)
+        # ahead of pm; list them in the dataset's own metero_var.
+        self.sensor_var = ds_cfg.get('metero_var', SENSOR_METERO_VAR)
         self.freq_hours = ds_cfg.get('freq_hours', 3)
 
         self.start_time = self._get_time(ds_cfg[start_time_str])
@@ -119,8 +123,11 @@ class HazeData(data.Dataset):
             # convention as the KnowAir branch below for wind_speed, and
             # direction is used as-is (no derivation needed, it's not a
             # pair of u/v components to resolve).
-            speed = 3.6 * self.feature[:, :, SENSOR_METERO_VAR.index('wind_speed10')]
-            direc = self.feature[:, :, SENSOR_METERO_VAR.index('wind_direction10')]
+            assert self.feature.shape[-1] == len(self.sensor_var), (
+                f"{self.knowair_fp} has {self.feature.shape[-1]} feature channels but "
+                f"metero_var lists {len(self.sensor_var)}: {self.sensor_var}")
+            speed = 3.6 * self.feature[:, :, self.sensor_var.index('wind_speed10')]
+            direc = self.feature[:, :, self.sensor_var.index('wind_direction10')]
         else:
             metero_var = config['data']['metero_var']
             metero_use = config['experiments']['metero_use']

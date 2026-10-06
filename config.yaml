@@ -161,3 +161,109 @@ dataset:
     val_end: [[2023, 5, 29, 23, 0], GMT]
     test_start: [[2023, 5, 30, 0, 0], GMT]
     test_end: [[2023, 6, 2, 16, 0], GMT]
+
+  # Datasets 5-7: BC wildfire-smoke PILOT (built by pilot/build_bcsmoke_pilot.py;
+  # see its docstring). Identical nodes/hours/weather/PM2.5 - they differ ONLY
+  # in the fire channel: 5 = none, 6 = distance-only fire proximity,
+  # 7 = wind-transported fire signal (AirLapseV2's 2-D anisotropic Green's
+  # function). Southern BC + northern WA PurpleAir, Jul-Aug 2023, hourly.
+  # Test window (Aug 14-31) covers the McDougall Creek / Bush Creek East
+  # smoke episodes. The .npy/.txt files are git-ignored (PurpleAir terms).
+  5:
+    family: sensor
+    data_fp: data/BCSmoke_nofire.npy
+    city_fp: data/site_bcsmoke.txt
+    metero_var: ['temperature', 'relative_humidity', 'rain', 'wind_speed10', 'wind_direction10']
+    k_neighbors: 5
+    freq_hours: 1
+    data_start: [[2023, 7, 1, 0, 0], GMT]
+    data_end: [[2023, 8, 31, 23, 0], GMT]
+    train_start: [[2023, 7, 1, 0, 0], GMT]
+    train_end: [[2023, 8, 4, 23, 0], GMT]
+    val_start: [[2023, 8, 5, 0, 0], GMT]
+    val_end: [[2023, 8, 13, 23, 0], GMT]
+    test_start: [[2023, 8, 14, 0, 0], GMT]
+    test_end: [[2023, 8, 31, 23, 0], GMT]
+  6:
+    family: sensor
+    data_fp: data/BCSmoke_iso.npy
+    city_fp: data/site_bcsmoke.txt
+    metero_var: ['temperature', 'relative_humidity', 'rain', 'wind_speed10', 'wind_direction10', 'fire_iso']
+    k_neighbors: 5
+    freq_hours: 1
+    data_start: [[2023, 7, 1, 0, 0], GMT]
+    data_end: [[2023, 8, 31, 23, 0], GMT]
+    train_start: [[2023, 7, 1, 0, 0], GMT]
+    train_end: [[2023, 8, 4, 23, 0], GMT]
+    val_start: [[2023, 8, 5, 0, 0], GMT]
+    val_end: [[2023, 8, 13, 23, 0], GMT]
+    test_start: [[2023, 8, 14, 0, 0], GMT]
+    test_end: [[2023, 8, 31, 23, 0], GMT]
+  7:
+    family: sensor
+    data_fp: data/BCSmoke_aniso.npy
+    city_fp: data/site_bcsmoke.txt
+    metero_var: ['temperature', 'relative_humidity', 'rain', 'wind_speed10', 'wind_direction10', 'fire_aniso']
+    k_neighbors: 5
+    freq_hours: 1
+    data_start: [[2023, 7, 1, 0, 0], GMT]
+    data_end: [[2023, 8, 31, 23, 0], GMT]
+    train_start: [[2023, 7, 1, 0, 0], GMT]
+    train_end: [[2023, 8, 4, 23, 0], GMT]
+    val_start: [[2023, 8, 5, 0, 0], GMT]
+    val_end: [[2023, 8, 13, 23, 0], GMT]
+    test_start: [[2023, 8, 14, 0, 0], GMT]
+    test_end: [[2023, 8, 31, 23, 0], GMT]
+
+  # Datasets 8-10: the same three fire variants over the last two full years
+  # (Oct 2024 - Sep 2026), built by pilot/build_bcsmoke_long.py (see its
+  # docstring for what changed vs the pilot). Chronological split: train
+  # through Jun 2026 (includes the whole 2025 fire season), val Jul 2026,
+  # test Aug-Sep 2026. Check data/BCSmoke2y_monthly.csv after building - if
+  # Jul or Aug-Sep 2026 turn out smoke-free, move the split. Git-ignored
+  # (PurpleAir terms); on Colab copy them in from Drive.
+  8:
+    family: sensor
+    data_fp: data/BCSmoke2y_nofire.npy
+    city_fp: data/site_bcsmoke2y.txt
+    metero_var: ['temperature', 'relative_humidity', 'rain', 'wind_speed10', 'wind_direction10']
+    k_neighbors: 5
+    freq_hours: 1
+    data_start: [[2024, 10, 1, 0, 0], GMT]
+    data_end: [[2026, 9, 30, 23, 0], GMT]
+    train_start: [[2024, 10, 1, 0, 0], GMT]
+    train_end: [[2026, 6, 30, 23, 0], GMT]
+    val_start: [[2026, 7, 1, 0, 0], GMT]
+    val_end: [[2026, 7, 31, 23, 0], GMT]
+    test_start: [[2026, 8, 1, 0, 0], GMT]
+    test_end: [[2026, 9, 30, 23, 0], GMT]
+  9:
+    family: sensor
+    data_fp: data/BCSmoke2y_iso.npy
+    city_fp: data/site_bcsmoke2y.txt
+    metero_var: ['temperature', 'relative_humidity', 'rain', 'wind_speed10', 'wind_direction10', 'fire_iso']
+    k_neighbors: 5
+    freq_hours: 1
+    data_start: [[2024, 10, 1, 0, 0], GMT]
+    data_end: [[2026, 9, 30, 23, 0], GMT]
+    train_start: [[2024, 10, 1, 0, 0], GMT]
+    train_end: [[2026, 6, 30, 23, 0], GMT]
+    val_start: [[2026, 7, 1, 0, 0], GMT]
+    val_end: [[2026, 7, 31, 23, 0], GMT]
+    test_start: [[2026, 8, 1, 0, 0], GMT]
+    test_end: [[2026, 9, 30, 23, 0], GMT]
+  10:
+    family: sensor
+    data_fp: data/BCSmoke2y_aniso.npy
+    city_fp: data/site_bcsmoke2y.txt
+    metero_var: ['temperature', 'relative_humidity', 'rain', 'wind_speed10', 'wind_direction10', 'fire_aniso']
+    k_neighbors: 5
+    freq_hours: 1
+    data_start: [[2024, 10, 1, 0, 0], GMT]
+    data_end: [[2026, 9, 30, 23, 0], GMT]
+    train_start: [[2024, 10, 1, 0, 0], GMT]
+    train_end: [[2026, 6, 30, 23, 0], GMT]
+    val_start: [[2026, 7, 1, 0, 0], GMT]
+    val_end: [[2026, 7, 31, 23, 0], GMT]
+    test_start: [[2026, 8, 1, 0, 0], GMT]
+    test_end: [[2026, 9, 30, 23, 0], GMT]

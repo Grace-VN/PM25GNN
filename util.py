@@ -6,7 +6,9 @@ import numpy as np
 
 proj_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(proj_dir)
-conf_fp = os.path.join(proj_dir, 'config.yaml')
+# CONFIG_FP lets a driver script (e.g. pilot/run_pilot.py) point train.py at
+# a generated config without rewriting config.yaml and losing its comments.
+conf_fp = os.environ.get('CONFIG_FP', os.path.join(proj_dir, 'config.yaml'))
 with open(conf_fp) as f:
     config = yaml.load(f, Loader=yaml.FullLoader)
 

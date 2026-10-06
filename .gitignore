@@ -165,3 +165,12 @@ data/data.csv
 # ~845MB download that GitHub's 100MB per-file limit would reject anyway.
 /3-20260830T050539Z-1-001.zip
 /ref/
+
+# PurpleAir raw data - terms bar redistribution
+feasibility/*.csv
+feasibility/.purpleair_key
+pilot/cache/
+pilot/cache_long/
+data/BCSmoke*
+data/site_bcsmoke*.txt
+pilot/results/
