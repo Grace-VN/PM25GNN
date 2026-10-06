@@ -174,3 +174,9 @@ pilot/cache_long/
 data/BCSmoke*
 data/site_bcsmoke*.txt
 pilot/results/
+
+# BC/WA AirNow dataset (dataset 9): public data, but the ~50 MB array belongs
+# in its own dataset repo/release, not this code repo.
+pilot/cache_airnow/
+data/BCWA_AirNow*
+data/site_bcwa_airnow*

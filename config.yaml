@@ -238,3 +238,25 @@ dataset:
     val_end: [[2026, 3, 31, 23, 0], GMT]
     test_start: [[2026, 4, 1, 0, 0], GMT]
     test_end: [[2026, 9, 30, 23, 0], GMT]
+
+  # Dataset 9: public reference-monitor PM2.5 for BC + Washington, hourly,
+  # Oct 2024 - Sep 2026 - KnowAir-style, but recent and regional. BC Ministry
+  # of Environment, Metro Vancouver, ECCC and WA Ecology stations as reported
+  # to AirNow (preliminary, not final-validated data) + ERA5 weather. Built by
+  # pilot/build_bcwa_airnow.py (no API keys); ~116 stations at the default
+  # 85% completeness bar. Same split as dataset 8.
+  9:
+    family: sensor
+    data_fp: data/BCWA_AirNow_2y.npy
+    city_fp: data/site_bcwa_airnow_2y.txt
+    metero_var: ['temperature', 'relative_humidity', 'rain', 'wind_speed10', 'wind_direction10']
+    k_neighbors: 5
+    freq_hours: 1
+    data_start: [[2024, 10, 1, 0, 0], GMT]
+    data_end: [[2026, 9, 30, 23, 0], GMT]
+    train_start: [[2024, 10, 1, 0, 0], GMT]
+    train_end: [[2025, 12, 31, 23, 0], GMT]
+    val_start: [[2026, 1, 1, 0, 0], GMT]
+    val_end: [[2026, 3, 31, 23, 0], GMT]
+    test_start: [[2026, 4, 1, 0, 0], GMT]
+    test_end: [[2026, 9, 30, 23, 0], GMT]
