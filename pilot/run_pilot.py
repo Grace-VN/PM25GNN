@@ -28,7 +28,7 @@ REPO = os.path.dirname(HERE)
 # local disk is wiped when it disconnects).
 RESULTS = os.environ.get("PILOT_RESULTS_DIR", os.path.join(HERE, "results"))
 DATASETS = {5: "no fire", 6: "fire, distance only", 7: "fire, wind-transported",
-            8: "2y, no fire", 9: "2y, fire, distance only", 10: "2y, fire, wind-transported"}
+            8: "2y, PM2.5 + weather"}
 THRESHOLDS = (35.5, 55.5)
 
 

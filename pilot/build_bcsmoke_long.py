@@ -1,15 +1,17 @@
-"""Build the multi-year BC wildfire-smoke datasets (dataset_num 8/9/10).
+"""Build the multi-year BC PurpleAir PM2.5 dataset (dataset_num 8).
 
 Same recipe as build_bcsmoke_pilot.py (datasets 5/6/7): same node box and
-~25 km cells, PurpleAir pm2.5_alt, ERA5 weather via Open-Meteo, NASA FIRMS
-VIIRS S-NPP fires, same fire_iso / fire_aniso definitions - stretched from
-one 2-month season to a multi-year window (default 2024-10-01 .. 2026-09-30,
-the last two full years). What had to change to fit free API tiers:
+~25 km cells, PurpleAir pm2.5_alt, ERA5 weather via Open-Meteo - stretched
+from one 2-month season to a multi-year window (default 2024-10-01 ..
+2026-09-30, the last two full years). By default the output is PM2.5 +
+weather only (<tag>_nofire.npy), a plain forecasting benchmark. --fire also
+builds the pilot's fire variants (needs FIRMS_MAP_KEY). What had to change to
+fit free API tiers:
 
-  - PurpleAir: history pulled in 60-day chunks (the pilot pulled 62 days in
-    one hourly call; longer spans aren't documented to work). Candidates in a
-    cell are first ranked by a cheap DAILY-average probe, so only the chosen
-    sensor pays for the full hourly pull. The sensor list comes from the API
+  - PurpleAir: history pulled in chunks of the API's max span (180 days
+    hourly, 365 daily - it allows 2 years daily, but the window is 730 days
+    plus the end hour). Candidates in a cell are first ranked by a cheap
+    DAILY-average probe, so only the chosen sensor pays for the hourly pull. The sensor list comes from the API
     (feasibility/purpleair_sensors.csv is git-ignored, so a fresh clone - e.g.
     Colab - doesn't have it).
   - Open-Meteo weights a request by locations x days/14, so two years at one
@@ -36,9 +38,10 @@ gap. <out>/<tag>_monthly.csv has per-month smoke stats - check it before
 trusting the train/val/test split in config.yaml (datasets 8-10).
 
 Usage (local or Colab; re-run to resume, everything is cached):
-  PURPLEAIR_API_KEY=... FIRMS_MAP_KEY=... python pilot/build_bcsmoke_long.py
+  PURPLEAIR_API_KEY=... python pilot/build_bcsmoke_long.py
       [--start 2024-10-01 --end 2026-09-30] [--cache DIR] [--out DIR]
-Writes <out>/<tag>_{nofire,iso,aniso}.npy and <out>/site_<tag lower>.txt
+      [--fire]   (+ FIRMS_MAP_KEY=...: also <tag>_{iso,aniso}.npy)
+Writes <out>/<tag>_nofire.npy, <out>/<tag>_monthly.csv and <out>/site_<tag lower>.txt
 (defaults: out = data/, tag = BCSmoke2y). Don't commit or share them -
 PurpleAir's terms bar redistributing its data.
 """
@@ -64,7 +67,7 @@ from build_bcsmoke_pilot import (  # noqa: E402  (shared constants/helpers)
     MAX_CANDIDATES, MAX_LAG_H, NODE_BBOX, SEED, WEATHER_VARS,
     bearing_rad, haversine_km, http_json, pa_key)
 
-PA_CHUNK_DAYS = 60
+PA_CHUNK_DAYS = {60: 180, 1440: 365}   # API max span per call, by average (minutes)
 PA_SLEEP = 1.0
 GRID_DEG = 2.0                     # fire-source wind grid
 STATIC_MIN_DAYS = 10               # Nov-Mar detection days that mark a static source
@@ -113,9 +116,10 @@ def pa_sensors(key):
 def pa_history(key, sid, average):
     """pm2.5_alt for one sensor over [T0, T1] at `average` minutes, chunked."""
     parts = []
-    for c0 in pd.date_range(T0, T1, freq=f"{PA_CHUNK_DAYS}D"):
-        c1 = min(c0 + pd.Timedelta(days=PA_CHUNK_DAYS), T1 + pd.Timedelta(hours=1))
-        fp = os.path.join(cache_dir("pa"), f"{sid}_{average}_{c0:%Y%m%d}.csv")
+    days = PA_CHUNK_DAYS[average]
+    for c0 in pd.date_range(T0, T1, freq=f"{days}D"):
+        c1 = min(c0 + pd.Timedelta(days=days), T1 + pd.Timedelta(hours=1))
+        fp = os.path.join(cache_dir("pa"), f"{sid}_{average}_{c0:%Y%m%d}_{days}d.csv")
         if not os.path.exists(fp):
             p = dict(fields="pm2.5_alt", average=average,
                      start_timestamp=int(c0.timestamp()), end_timestamp=int(c1.timestamp()))
@@ -429,6 +433,8 @@ def main():
     ap.add_argument("--out", default=os.path.join(REPO, "data"))
     ap.add_argument("--min_completeness", type=float, default=0.85)
     ap.add_argument("--node_bbox", help="lat0,lat1,lon0,lon1 - override (e.g. a tiny test box)")
+    ap.add_argument("--fire", action="store_true",
+                    help="also build the fire_iso/fire_aniso variants (needs FIRMS_MAP_KEY)")
     args = ap.parse_args()
 
     T0 = pd.Timestamp(args.start, tz="UTC")
@@ -452,12 +458,12 @@ def main():
     weather = np.stack([meteo_to_array(meteo, HOURS, v) for v in WEATHER_VARS], axis=-1)  # [T,N,5]
     elev = [m["elevation"] for m in meteo]
 
-    daily = load_fires(os.environ.get("FIRMS_MAP_KEY"))
-    fire_aniso, fire_iso = fire_features(nodes, daily, om)
-
-    variants = {"nofire": weather,
-                "iso": np.concatenate([weather, fire_iso[..., None]], axis=-1),
-                "aniso": np.concatenate([weather, fire_aniso[..., None]], axis=-1)}
+    variants = {"nofire": weather}
+    if args.fire:
+        daily = load_fires(os.environ.get("FIRMS_MAP_KEY"))
+        fire_aniso, fire_iso = fire_features(nodes, daily, om)
+        variants["iso"] = np.concatenate([weather, fire_iso[..., None]], axis=-1)
+        variants["aniso"] = np.concatenate([weather, fire_aniso[..., None]], axis=-1)
     for name, feat in variants.items():
         arr = np.concatenate([feat, pm[..., None]], axis=-1).astype(np.float64)
         assert np.isfinite(arr).all(), name
@@ -476,13 +482,13 @@ def main():
         "pm_p99": pmf.groupby(month).apply(lambda g: np.percentile(g.values, 99)),
         "node_hours_gt35.5": (pmf > 35.5).mean(axis=1).groupby(month).mean(),
         "hours_any_gt35.5": (pmf > 35.5).any(axis=1).groupby(month).mean(),
-        "fire_aniso_mean": pd.Series(fire_aniso.mean(axis=1), index=HOURS).groupby(month).mean(),
     }).round(3)
     monthly.to_csv(os.path.join(args.out, f"{args.tag}_monthly.csv"))
     print(monthly.to_string())
-    pm_flat = np.log1p(pm).ravel()
-    for name, fv in (("fire_iso", fire_iso), ("fire_aniso", fire_aniso)):
-        print(f"corr(log PM2.5, {name}) = {np.corrcoef(pm_flat, fv.ravel())[0, 1]:.3f}")
+    if args.fire:
+        pm_flat = np.log1p(pm).ravel()
+        for name, fv in (("fire_iso", fire_iso), ("fire_aniso", fire_aniso)):
+            print(f"corr(log PM2.5, {name}) = {np.corrcoef(pm_flat, fv.ravel())[0, 1]:.3f}")
 
 
 if __name__ == "__main__":
