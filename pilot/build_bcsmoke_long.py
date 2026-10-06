@@ -20,10 +20,11 @@ the last two full years). What had to change to fit free API tiers:
     0.25-degree fire cell - ~15x too many calls for two years).
   - FIRMS: 2025+ country archives aren't published yet, so fires come from
     the FIRMS area API (free MAP_KEY, env FIRMS_MAP_KEY): standard-processing
-    (SP) data where available, near-real-time (NRT) after. API rows carry no
-    'type' column (the pilot's type==0 vegetation filter), so persistent
-    non-wildfire hotspots (refineries, flares, mills) are dropped by activity
-    outside fire season instead: a 0.25-degree cell with detections on
+    (SP) data where available, near-real-time (NRT) after, with NOAA-20 filling
+    any day S-NPP is down (it has outages, e.g. 2026-07-11/12). SP rows keep the
+    pilot's type==0 vegetation filter, but NRT rows have no 'type' column, so
+    persistent non-wildfire hotspots (refineries, flares, mills) are also
+    dropped by activity outside fire season: a 0.25-degree cell with detections on
     >= STATIC_MIN_DAYS distinct Nov-Mar days. Without a MAP_KEY it falls back
     to the yearly country archives, which only works for published years.
   - Fire features are accumulated per fire day from sparse active-cell lists
@@ -69,6 +70,7 @@ GRID_DEG = 2.0                     # fire-source wind grid
 STATIC_MIN_DAYS = 10               # Nov-Mar detection days that mark a static source
 OM_PER_MIN, OM_PER_HOUR = 500, 4500  # stay under Open-Meteo's 600/min, 5000/h
 FIRMS = "https://firms.modaps.eosdis.nasa.gov"
+FIRMS_DAYS = 5                     # area API's max day range per request
 
 # set by main() from the CLI
 T0 = T1 = HOURS = CACHE = None
@@ -89,7 +91,7 @@ def http_text(url, retries=4):
             if e.code in (429, 500, 502, 503) and attempt < retries - 1:
                 time.sleep(15 * (attempt + 1))
                 continue
-            raise
+            raise RuntimeError(f"HTTP {e.code}: {e.read().decode('utf-8', 'replace')[:300]}") from e
 
 
 # ---------------------------------------------------------------- PurpleAir
@@ -262,26 +264,25 @@ def meteo_to_array(meteo, hours, var):
 
 
 # ---------------------------------------------------------------- fires
-def firms_api(key, d0, d1):
-    avail = pd.read_csv(io.StringIO(http_text(f"{FIRMS}/api/data_availability/csv/{key}/ALL")))
-    avail = avail.set_index("data_id")
-    sp_max = pd.Timestamp(avail.loc["VIIRS_SNPP_SP", "max_date"])
-    nrt_min = pd.Timestamp(avail.loc["VIIRS_SNPP_NRT", "min_date"])
+def firms_satellite(key, avail, sat, d0, d1):
+    """One VIIRS satellite's detections over [d0, d1]: SP, then NRT after SP ends."""
+    sp_max = pd.Timestamp(avail.loc[f"VIIRS_{sat}_SP", "max_date"])
+    nrt_min = pd.Timestamp(avail.loc[f"VIIRS_{sat}_NRT", "min_date"])
     segments = []
     if d0 <= sp_max:
-        segments.append(("VIIRS_SNPP_SP", d0, min(d1, sp_max)))
+        segments.append((f"VIIRS_{sat}_SP", d0, min(d1, sp_max)))
     if d1 > sp_max:
         s = max(d0, sp_max + pd.Timedelta(days=1))
         if s < nrt_min:
-            print(f"WARNING: no FIRMS S-NPP data between {s.date()} and {nrt_min.date()}")
-        segments.append(("VIIRS_SNPP_NRT", max(s, nrt_min), d1))
+            print(f"WARNING: no FIRMS {sat} data between {s.date()} and {nrt_min.date()}")
+        segments.append((f"VIIRS_{sat}_NRT", max(s, nrt_min), d1))
     b = FIRE_BBOX
     area = f"{b['lon0']},{b['lat0']},{b['lon1']},{b['lat1']}"
     frames = []
     for src, a, z in segments:
         print(f"FIRMS {src}: {a.date()} .. {z.date()}")
-        for c in pd.date_range(a, z, freq="10D"):
-            n = min(10, (z - c).days + 1)
+        for c in pd.date_range(a, z, freq=f"{FIRMS_DAYS}D"):
+            n = min(FIRMS_DAYS, (z - c).days + 1)
             fp = os.path.join(cache_dir("firms"), f"{src}_{c:%Y%m%d}_{n}.csv")
             if not os.path.exists(fp):
                 text = http_text(f"{FIRMS}/api/area/csv/{key}/{src}/{area}/{n}/{c:%Y-%m-%d}")
@@ -294,8 +295,25 @@ def firms_api(key, d0, d1):
             outside = ((dates < c) | (dates > c + pd.Timedelta(days=n - 1))).sum()
             if outside:
                 print(f"WARNING: {fp} has {outside} rows outside its requested days")
-            frames.append(df)
-    return pd.concat(frames, ignore_index=True)
+            if len(df):
+                frames.append(df)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(
+        columns=["latitude", "longitude", "acq_date", "acq_time", "confidence", "frp"])
+
+
+def firms_api(key, d0, d1):
+    """S-NPP (the pilot's satellite); on days S-NPP has no detections at all in
+    FIRE_BBOX - an outage, e.g. 2026-07-11/12 - fall back to NOAA-20, the same
+    VIIRS instrument ~50 min behind in the same orbit."""
+    avail = pd.read_csv(io.StringIO(http_text(f"{FIRMS}/api/data_availability/csv/{key}/ALL")))
+    avail = avail.set_index("data_id")
+    snpp = firms_satellite(key, avail, "SNPP", d0, d1)
+    noaa = firms_satellite(key, avail, "NOAA20", d0, d1)
+    fill = noaa[~noaa.acq_date.isin(set(snpp.acq_date))]
+    days = sorted(fill.acq_date.unique())
+    print(f"S-NPP had no detections on {len(days)} days that NOAA-20 did - filled from NOAA-20"
+          + (f": {', '.join(days[:10])}{' ...' if len(days) > 10 else ''}" if days else ""))
+    return pd.concat([snpp, fill], ignore_index=True)
 
 
 def firms_archives(d0, d1):
@@ -326,7 +344,9 @@ def load_fires(firms_key):
     f = f[f.latitude.between(b["lat0"], b["lat1"]) & f.longitude.between(b["lon0"], b["lon1"])
           & (f.confidence.astype(str).str[0].str.lower() != "l")]
     if "type" in f.columns:
-        f = f[f["type"] == 0]                        # presumed vegetation fire
+        # SP rows carry 'type' (0 = presumed vegetation fire); NRT rows don't
+        # (NaN after the concat) and rely on the static-source filter below.
+        f = f[f["type"].isna() | (f["type"] == 0)]
     f = f.drop_duplicates(["latitude", "longitude", "acq_date", "acq_time"])
     f["date"] = pd.to_datetime(f.acq_date)
     f = f[(f.date >= d0) & (f.date <= d1)].copy()
